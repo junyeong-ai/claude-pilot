@@ -297,6 +297,8 @@ checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
 [[package]]
 name = "claude-agent"
 version = "0.2.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d33d6a9f017a6af05bad1488bf383b674e3367660cf8234f421c52f18dc4952a"
 dependencies = [
  "async-trait",
  "base64",
@@ -1407,7 +1409,9 @@ dependencies = [
 
 [[package]]
 name = "modmap"
-version = "1.0.0"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81fd9d6001e2fc2e59b7d9d3ba949cef28bbbd31ef0c0bf446f56742383dab5f"
 dependencies = [
  "chrono",
  "schemars",

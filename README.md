@@ -2,20 +2,14 @@
 
 > AI 코딩 오케스트레이터 - 증거 기반 계획, 멀티 에이전트 합의, 수렴적 품질 검증으로 완벽한 코드를 만듭니다.
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         왜 Claude-Pilot인가?                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│   기존 AI 코딩                          Claude-Pilot                        │
-│   ────────────────                      ─────────────                       │
-│   ❌ 추측으로 코딩                      ✅ 증거 수집 후 계획                 │
-│   ❌ "완료!" 후 버그 발견               ✅ 2회 연속 검증 통과까지 반복       │
-│   ❌ 복잡한 작업에서 일관성 부족        ✅ 멀티 에이전트 합의로 조율         │
-│   ❌ 중단되면 처음부터 다시             ✅ 이벤트 소싱으로 중단점에서 재개   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+## 왜 Claude-Pilot인가?
+
+| 기존 AI 코딩 | Claude-Pilot |
+|-------------|--------------|
+| ❌ 추측으로 코딩 | ✅ 증거 수집 후 계획 |
+| ❌ "완료!" 후 버그 발견 | ✅ 2회 연속 검증 통과까지 반복 |
+| ❌ 복잡한 작업에서 일관성 부족 | ✅ 멀티 에이전트 합의로 조율 |
+| ❌ 중단되면 처음부터 다시 | ✅ 이벤트 소싱으로 중단점에서 재개 |
 
 ---
 
@@ -29,7 +23,6 @@
 - [멀티 에이전트 시스템](#멀티-에이전트-시스템)
 - [고급 기능](#고급-기능)
 - [실제 사용 사례](#실제-사용-사례)
-- [성능 튜닝](#성능-튜닝)
 - [문제 해결](#문제-해결)
 
 ---
@@ -45,7 +38,7 @@
 ### 설치
 
 ```bash
-git clone https://github.com/your-org/claude-pilot.git
+git clone https://github.com/anthropics/claude-pilot.git
 cd claude-pilot
 cargo build --release
 cargo install --path .
@@ -62,7 +55,7 @@ claude-pilot init
 claude-pilot mission "사용자 인증 기능 추가"
 ```
 
-### 격리 모드 선택
+### 격리 모드
 
 ```bash
 # Worktree 격리 (권장) - 별도 디렉토리에서 작업
@@ -79,41 +72,35 @@ claude-pilot mission "문서 업데이트" --direct
 
 ## 핵심 개념
 
-### 아키텍처 개요
+### 아키텍처
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        Claude-Pilot 아키텍처                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│                          ┌─────────────────┐                                │
-│                          │ MissionOrchestrator│                             │
-│                          │ (미션 생명주기)    │                              │
-│                          └────────┬────────┘                                │
-│                                   │                                         │
-│          ┌────────────────────────┼────────────────────────┐               │
-│          ▼                        ▼                        ▼               │
-│  ┌──────────────┐        ┌──────────────┐        ┌──────────────┐          │
-│  │  AgentPool   │        │ Coordinator  │        │  EventStore  │          │
-│  │ (에이전트 풀)│◀──────▶│ (조율/합의)   │──────▶│ (이벤트 저장) │          │
-│  └──────────────┘        └──────────────┘        └──────────────┘          │
-│          │                        │                        │               │
-│          ▼                        ▼                        ▼               │
-│  ┌──────────────┐        ┌──────────────┐        ┌──────────────┐          │
-│  │ Research     │        │ Consensus    │        │ Replay/      │          │
-│  │ Planning     │        │ Engine       │        │ Resume       │          │
-│  │ Coder        │        │ (합의 엔진)   │        │ (재개 지원)   │          │
-│  │ Verifier     │        └──────────────┘        └──────────────┘          │
-│  │ Reviewer     │                                                          │
-│  └──────────────┘                                                          │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Orchestration["오케스트레이션"]
+        MO[MissionOrchestrator<br/>미션 생명주기]
+    end
+
+    subgraph Agents["에이전트 시스템"]
+        AP[AgentPool<br/>에이전트 풀]
+        CO[Coordinator<br/>조율/합의]
+    end
+
+    subgraph State["상태 관리"]
+        ES[(EventStore<br/>이벤트 저장)]
+        RP[Replay/Resume<br/>재개 지원]
+    end
+
+    MO --> AP
+    MO --> CO
+    CO --> ES
+    ES --> RP
+    AP --> CO
 ```
 
 ### 3가지 핵심 보장
 
-| 보장 | 설명 | 구현 방식 |
-|------|------|-----------|
+| 보장 | 설명 | 구현 |
+|------|------|------|
 | **품질 보장** | 2회 연속 검증 통과 필수 | ConvergentVerifier |
 | **일관성 보장** | 멀티 에이전트 합의 | Cross-Visibility Consensus |
 | **내구성 보장** | 중단점에서 재개 가능 | Event Sourcing (SQLite) |
@@ -122,60 +109,45 @@ claude-pilot mission "문서 업데이트" --direct
 
 ## 실행 흐름
 
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                              미션 실행 단계                                   │
-└──────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    Start["사용자 인증 기능 추가"] --> P1
 
-  "사용자 인증 기능 추가"
-         │
-         ▼
-┌─────────────────┐
-│   Phase 1       │  ResearchAgent가 코드베이스 분석
-│   Research      │  • 기존 구조 파악
-│                 │  • 의존성 확인
-│                 │  • 증거 수집
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   Phase 2       │  PlanningAgent들이 합의
-│   Planning      │  • 작업 분해
-│   (Consensus)   │  • Cross-visibility로 제안 공유
-│                 │  • 일관된 계획 도출
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   Phase 3       │  CoderAgent들이 구현
-│   Implement     │  • 코드 생성
-│                 │  • 파일 충돌 시 P2P 해결
-│                 │  • FileOwnership으로 동기화
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   Phase 4       │  VerifierAgent + ReviewerAgent
-│   Verify        │  • Build/Test/Lint 검증
-│   (Convergent)  │  • 코드 리뷰
-│                 │  • 이슈 발견 시 자동 수정
-└────────┬────────┘
-         │
-         ▼
-    ┌─────────┐
-    │ Clean?  │────NO────▶ Phase 3으로 돌아가서 수정
-    └────┬────┘
-         │YES
-         ▼
-    ┌─────────┐
-    │ 2회     │────NO────▶ 한 번 더 검증
-    │ 연속?   │
-    └────┬────┘
-         │YES
-         ▼
-    ┌─────────┐
-    │  완료!  │
-    └─────────┘
+    subgraph P1["Phase 1: Research"]
+        R1[코드베이스 분석]
+        R2[의존성 확인]
+        R3[증거 수집]
+    end
+
+    P1 --> P2
+
+    subgraph P2["Phase 2: Planning"]
+        PL1[작업 분해]
+        PL2[Cross-visibility로 제안 공유]
+        PL3[합의 도출]
+    end
+
+    P2 --> P3
+
+    subgraph P3["Phase 3: Implement"]
+        I1[코드 생성]
+        I2[파일 충돌 P2P 해결]
+        I3[FileOwnership 동기화]
+    end
+
+    P3 --> P4
+
+    subgraph P4["Phase 4: Verify"]
+        V1[Build/Test/Lint]
+        V2[코드 리뷰]
+        V3[이슈 자동 수정]
+    end
+
+    P4 --> Check{클린?}
+    Check -->|NO| P3
+    Check -->|YES| Check2{2회 연속?}
+    Check2 -->|NO| P4
+    Check2 -->|YES| Done[완료!]
 ```
 
 ---
@@ -186,7 +158,7 @@ claude-pilot mission "문서 업데이트" --direct
 
 | 명령어 | 설명 |
 |--------|------|
-| `claude-pilot init` | 프로젝트 초기화 (.pilot/, .claudegen/ 생성) |
+| `claude-pilot init` | 프로젝트 초기화 |
 | `claude-pilot mission "<설명>"` | 미션 시작 |
 | `claude-pilot status [mission_id]` | 상태 확인 |
 | `claude-pilot list` | 모든 미션 목록 |
@@ -207,24 +179,16 @@ claude-pilot mission "문서 업데이트" --direct
 |--------|------|
 | `claude-pilot merge <mission_id>` | 메인에 병합 |
 | `claude-pilot cleanup [mission_id]` | Worktree 정리 |
-| `claude-pilot extract [mission_id]` | 학습 패턴 추출 |
 
-### 옵션
+### 주요 옵션
 
 ```bash
-# 미션 시작 옵션
 --isolated              # Worktree 격리 모드 (권장)
 --branch                # 브랜치 격리 모드
 --direct                # 현재 브랜치에서 작업
 --priority <P1|P2|P3>   # 우선순위 (P1=긴급)
---on-complete <pr|manual|direct>  # 완료 시 액션
-
-# 출력 형식
--o text                 # 텍스트 (기본값)
--o json                 # JSON
--o stream               # NDJSON 스트리밍 (실시간)
-
-# 디버깅
+-o json                 # JSON 출력
+-o stream               # 실시간 스트리밍
 -v, --verbose           # 상세 로그
 ```
 
@@ -238,7 +202,7 @@ claude-pilot mission "문서 업데이트" --direct
 your-project/
 ├── .pilot/
 │   ├── config.toml       # 프로젝트 설정
-│   └── events.db         # 이벤트 저장소 (SQLite)
+│   └── events.db         # 이벤트 저장소
 └── .claudegen/
     └── manifest.json     # 모듈 구조 정의
 ```
@@ -246,65 +210,38 @@ your-project/
 ### 핵심 설정 (.pilot/config.toml)
 
 ```toml
-# ═══════════════════════════════════════════════════════════════
 # 기본 설정
-# ═══════════════════════════════════════════════════════════════
 [orchestrator]
-max_iterations = 100           # 최대 반복 횟수
-mission_timeout_secs = 604800  # 미션 타임아웃 (7일)
+max_iterations = 100
+mission_timeout_secs = 604800  # 7일
 
-# ═══════════════════════════════════════════════════════════════
-# 멀티 에이전트 시스템
-# ═══════════════════════════════════════════════════════════════
+# 멀티 에이전트
 [multi_agent]
-enabled = true                 # 멀티 에이전트 ON
-dynamic_mode = true            # Manifest 기반 동적 구성
-parallel_execution = true      # 병렬 실행
+enabled = true
+parallel_execution = true
 
-# 에이전트 인스턴스 수
 [multi_agent.instances]
-research = 1                   # ResearchAgent 수
-planning = 3                   # PlanningAgent 수 (합의용)
-coder = 2                      # CoderAgent 수 (병렬 구현)
-verifier = 1                   # VerifierAgent 수
+research = 1
+planning = 3      # 합의용
+coder = 2         # 병렬 구현
+verifier = 1
 
-# ═══════════════════════════════════════════════════════════════
 # 합의 설정
-# ═══════════════════════════════════════════════════════════════
 [multi_agent.consensus]
-max_rounds = 5                 # 최대 합의 라운드
-min_participants = 2           # 최소 참여자
-total_timeout_secs = 1800      # 합의 타임아웃 (30분)
-enable_cross_visibility = true # 에이전트 간 제안 공유
+max_rounds = 5
+enable_cross_visibility = true
+flat_threshold = 3        # 3명 이하 → 단일 라운드
+hierarchical_threshold = 10
 
-# 합의 전략 임계값
-flat_threshold = 3             # 3명 이하 → 단일 라운드 합의
-hierarchical_threshold = 10    # 10명 초과 → 계층형 합의
-
-# ═══════════════════════════════════════════════════════════════
-# 수렴적 검증 (품질 보장)
-# ═══════════════════════════════════════════════════════════════
+# 수렴적 검증 (변경 불가)
 [recovery.convergent_verification]
-required_clean_rounds = 2      # 2회 연속 클린 필수 (변경 불가)
-max_rounds = 10                # 최대 검증 라운드
-max_fix_attempts_per_issue = 5 # 이슈당 최대 수정 시도
-include_ai_review = true       # AI 코드 리뷰 포함 (변경 불가)
+required_clean_rounds = 2  # 필수
+include_ai_review = true   # 필수
 
-# ═══════════════════════════════════════════════════════════════
 # 이벤트 저장소
-# ═══════════════════════════════════════════════════════════════
 [state]
 database_path = ".pilot/events.db"
-retention_days = 30            # 이벤트 보관 기간
-enable_snapshots = true        # 스냅샷 활성화
-snapshot_interval_events = 100 # 100 이벤트마다 스냅샷
-
-# ═══════════════════════════════════════════════════════════════
-# 컨텍스트 압축 (대규모 코드베이스용)
-# ═══════════════════════════════════════════════════════════════
-[context.compaction]
-enabled = true
-compaction_threshold = 0.7     # 70% 사용 시 압축 트리거
+enable_snapshots = true
 ```
 
 ### 모듈 구조 정의 (.claudegen/manifest.json)
@@ -313,40 +250,6 @@ compaction_threshold = 0.7     # 70% 사용 시 압축 트리거
 {
   "project": {
     "name": "my-project",
-    "workspaces": [
-      {
-        "id": "main",
-        "path": ".",
-        "domains": ["backend", "frontend"]
-      }
-    ],
-    "domains": [
-      {
-        "id": "backend",
-        "group_ids": ["api", "database"]
-      },
-      {
-        "id": "frontend",
-        "group_ids": ["ui"]
-      }
-    ],
-    "groups": [
-      {
-        "id": "api",
-        "module_ids": ["auth", "users"],
-        "domain_id": "backend"
-      },
-      {
-        "id": "database",
-        "module_ids": ["models", "migrations"],
-        "domain_id": "backend"
-      },
-      {
-        "id": "ui",
-        "module_ids": ["components", "pages"],
-        "domain_id": "frontend"
-      }
-    ],
     "modules": [
       {
         "id": "auth",
@@ -354,20 +257,6 @@ compaction_threshold = 0.7     # 70% 사용 시 압축 트리거
         "paths": ["src/auth/"],
         "dependencies": ["models"],
         "responsibility": "사용자 인증 및 권한 관리"
-      },
-      {
-        "id": "users",
-        "name": "사용자 모듈",
-        "paths": ["src/users/"],
-        "dependencies": ["auth", "models"],
-        "responsibility": "사용자 CRUD"
-      },
-      {
-        "id": "models",
-        "name": "모델 모듈",
-        "paths": ["src/models/"],
-        "dependencies": [],
-        "responsibility": "데이터 모델 정의"
       }
     ]
   }
@@ -380,97 +269,55 @@ compaction_threshold = 0.7     # 70% 사용 시 압축 트리거
 
 ### 에이전트 역할
 
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                            에이전트 역할 분담                                 │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  Phase 1: Research                    Phase 2: Planning                      │
-│  ┌─────────────────────┐              ┌─────────────────────┐                │
-│  │   ResearchAgent     │              │   PlanningAgent ×3  │                │
-│  │                     │              │                     │                │
-│  │   • 코드베이스 분석 │              │   • 합의로 계획 도출│                │
-│  │   • 증거 수집       │              │   • 작업 분해       │                │
-│  │   • 의존성 파악     │              │   • 제안 공유       │                │
-│  └─────────────────────┘              └─────────────────────┘                │
-│                                                                              │
-│  Phase 3: Implement                   Phase 4: Verify                        │
-│  ┌─────────────────────┐              ┌─────────────────────┐                │
-│  │   CoderAgent ×2     │              │   VerifierAgent     │                │
-│  │                     │              │   ReviewerAgent     │                │
-│  │   • 병렬 구현       │              │                     │                │
-│  │   • 충돌 자동 해결  │              │   • Build/Test/Lint │                │
-│  │   • P2P 조율        │              │   • 코드 리뷰       │                │
-│  └─────────────────────┘              └─────────────────────┘                │
-│                                                                              │
-│  전체 Phase: Advisory                                                        │
-│  ┌─────────────────────┐              ┌─────────────────────┐                │
-│  │   ArchitectAgent    │              │   ModuleAgent       │                │
-│  │                     │              │                     │                │
-│  │   • 설계 검증       │              │   • 모듈별 전문성   │                │
-│  │   • 아키텍처 조언   │              │   • 스코프 강제     │                │
-│  └─────────────────────┘              └─────────────────────┘                │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph Phase1["Phase 1"]
+        RA[ResearchAgent<br/>증거 수집]
+    end
+
+    subgraph Phase2["Phase 2"]
+        PA[PlanningAgent ×3<br/>합의 계획]
+    end
+
+    subgraph Phase3["Phase 3"]
+        CA[CoderAgent ×2<br/>병렬 구현]
+    end
+
+    subgraph Phase4["Phase 4"]
+        VA[VerifierAgent<br/>검증]
+        RV[ReviewerAgent<br/>리뷰]
+    end
+
+    Phase1 --> Phase2 --> Phase3 --> Phase4
 ```
 
 ### 계층형 합의
 
-```
-크로스-워크스페이스 시나리오:
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                                                                             │
-│  Project A                              Project B                           │
-│  ├── Domain: Backend                    ├── Domain: API                     │
-│  │   ├── Module: auth    ─┐             │   └── Module: gateway ─┐          │
-│  │   ├── Module: user    ─┼─ Group 1    │                        │          │
-│  │   └── Module: session ─┘             └── Domain: Data         │          │
-│  │                                          └── Module: cache ───┘          │
-│  │                                                               │          │
-│  └───────────────────────────┬───────────────────────────────────┘          │
-│                              │                                              │
-│                              ▼                                              │
-│                ┌─────────────────────────────┐                              │
-│                │   계층형 합의 (Bottom-Up)   │                              │
-│                ├─────────────────────────────┤                              │
-│                │                             │                              │
-│                │   Tier 0: Module            │  ← 모듈별 에이전트 합의      │
-│                │           ↓                 │                              │
-│                │   Tier 1: Group             │  ← 그룹 코디네이터 합의      │
-│                │           ↓                 │                              │
-│                │   Tier 2: Domain            │  ← 도메인 코디네이터 합의    │
-│                │           ↓                 │                              │
-│                │   Tier 3: Workspace         │  ← 워크스페이스 합의         │
-│                │           ↓                 │                              │
-│                │   Tier 4: CrossWorkspace    │  ← 전체 프로젝트 합의        │
-│                │                             │                              │
-│                └─────────────────────────────┘                              │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart BT
+    M[Tier 0: Module<br/>모듈별 에이전트] --> G[Tier 1: Group<br/>그룹 코디네이터]
+    G --> D[Tier 2: Domain<br/>도메인 코디네이터]
+    D --> W[Tier 3: Workspace<br/>워크스페이스]
+    W --> CW[Tier 4: CrossWorkspace<br/>전체 프로젝트]
 ```
 
 ### Cross-Visibility 합의
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         합의 방식 비교                                       │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  기존 방식 (독립 투표):              Claude-Pilot (Cross-Visibility):       │
-│  ─────────────────────               ──────────────────────────────         │
-│                                                                             │
-│  Agent A: 제안 A  ─┐                 Agent A: 제안 A ─┐                     │
-│  Agent B: 제안 B  ─┼─▶ 다수결        Agent B: 제안 B ─┼─▶ 실시간 공유       │
-│  Agent C: 제안 C  ─┘    투표         Agent C: 제안 C ─┘        │            │
-│                         │                                      ▼            │
-│                         ▼                              ┌──────────────┐     │
-│                   불일치 가능                          │ 서로 제안 확인│     │
-│                   (각자 다른 방향)                     │ 의미론적 조정 │     │
-│                                                        │ 일관된 합의  │     │
-│                                                        └──────────────┘     │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph Traditional["기존 방식"]
+        A1[Agent A] --> V1[다수결]
+        B1[Agent B] --> V1
+        C1[Agent C] --> V1
+        V1 --> R1[불일치 가능]
+    end
+
+    subgraph CrossVis["Cross-Visibility"]
+        A2[Agent A] <--> Share[실시간 공유]
+        B2[Agent B] <--> Share
+        C2[Agent C] <--> Share
+        Share --> R2[일관된 합의]
+    end
 ```
 
 ---
@@ -479,39 +326,20 @@ compaction_threshold = 0.7     # 70% 사용 시 압축 트리거
 
 ### 이벤트 소싱 & 재개
 
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                           이벤트 소싱 시스템                                  │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  Mission 실행                                                                │
-│       │                                                                      │
-│       ▼                                                                      │
-│  ┌─────────────────────────────────────────────────────────────────────────┐ │
-│  │                      Event Store (SQLite)                               │ │
-│  │                                                                         │ │
-│  │  MissionStarted → ConsensusStarted → TaskCompleted → VerifyRound → ... │ │
-│  │                                                                         │ │
-│  └─────────────────────────────────────────────────────────────────────────┘ │
-│       │                    │                    │                            │
-│       ▼                    ▼                    ▼                            │
-│  ┌─────────┐          ┌─────────┐          ┌─────────┐                       │
-│  │ Replay  │          │ Resume  │          │ Audit   │                       │
-│  │         │          │         │          │         │                       │
-│  │ 과거    │          │ 중단점  │          │ 전체    │                       │
-│  │ 상태    │          │ 에서    │          │ 이력    │                       │
-│  │ 재현    │          │ 계속    │          │ 추적    │                       │
-│  └─────────┘          └─────────┘          └─────────┘                       │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    Mission --> Events --> ES[(EventStore)]
+    ES --> Replay[과거 재현]
+    ES --> Resume[중단점 재개]
+    ES --> Audit[이력 추적]
 ```
 
 **사용 예시:**
 ```bash
-# 미션이 중단되었을 때 재개
+# 중단된 미션 재개
 claude-pilot resume mission-123
 
-# 실패한 미션 재시도 (성공한 작업 유지)
+# 실패한 미션 재시도
 claude-pilot retry mission-123
 
 # 특정 체크포인트에서 재개
@@ -520,175 +348,67 @@ claude-pilot resume mission-123 --checkpoint cp-456
 
 ### P2P 충돌 해결
 
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                           P2P 충돌 해결                                       │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  Coder A ──────────────────┬──────────────────── Coder B                     │
-│       │                    │                         │                       │
-│       ▼                    ▼                         ▼                       │
-│  ┌─────────┐          ┌─────────┐             ┌─────────┐                    │
-│  │ file.rs │    ←──   │ file.rs │   ──▶       │ file.rs │                    │
-│  │ 수정 중 │          │ (충돌!) │             │ 수정 중 │                    │
-│  └─────────┘          └─────────┘             └─────────┘                    │
-│       │                    │                         │                       │
-│       └────────────────────┼─────────────────────────┘                       │
-│                            ▼                                                 │
-│                  ┌──────────────────┐                                        │
-│                  │ FileOwnership    │                                        │
-│                  │ Manager          │                                        │
-│                  └────────┬─────────┘                                        │
-│                           │                                                  │
-│                           ▼                                                  │
-│  ┌───────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                       │   │
-│  │  1. Coder A: 소유권 획득 (ID 기반 결정적 선택)                        │   │
-│  │  2. Coder A: 작업 진행                                                │   │
-│  │  3. Coder B: DeferredQueue에 대기 등록                                │   │
-│  │  4. Coder A: 완료 후 소유권 해제                                      │   │
-│  │  5. Coder B: 자동 재시도                                              │   │
-│  │                                                                       │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant A as Coder A
+    participant FOM as FileOwnership
+    participant B as Coder B
+
+    A->>FOM: file.rs 소유권 요청
+    FOM-->>A: 소유권 획득
+    B->>FOM: file.rs 소유권 요청
+    FOM-->>B: 대기 (DeferredQueue)
+    A->>FOM: 작업 완료, 해제
+    FOM-->>B: 소유권 획득
+    B->>B: 자동 재시도
 ```
 
-### 수렴적 검증
+### 수렴적 검증 (2-Pass)
 
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                           수렴적 검증 (2-Pass)                                │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  목표: 2회 연속 클린 라운드 달성                                              │
-│                                                                              │
-│  Round 1: Build ✅ → Test ✅ → Lint ⚠️ (warning)                             │
-│           │                                                                  │
-│           ▼ 이슈 발견 → 자동 수정                                            │
-│                                                                              │
-│  Round 2: Build ✅ → Test ✅ → Lint ✅ (Clean #1)                             │
-│           │                                                                  │
-│           ▼ 1회 클린 → 한 번 더 검증                                         │
-│                                                                              │
-│  Round 3: Build ✅ → Test ✅ → Lint ✅ (Clean #2)                             │
-│           │                                                                  │
-│           ▼                                                                  │
-│                                                                              │
-│  ✅ 2회 연속 클린 → 수학적으로 수렴 → 미션 완료!                             │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    R1[Round 1] --> C1{클린?}
+    C1 -->|No| Fix1[자동 수정] --> R1
+    C1 -->|Yes| R2[Round 2<br/>Clean #1]
+    R2 --> C2{클린?}
+    C2 -->|No| Fix2[자동 수정] --> R1
+    C2 -->|Yes| Done[2회 연속 클린<br/>수학적 수렴 달성!]
 ```
 
 ---
 
 ## 실제 사용 사례
 
-### 사례 1: 신규 기능 개발
+### 신규 기능 개발
 
 ```bash
-# 복잡한 기능 개발 (합의 기반 계획)
 claude-pilot mission "OAuth2.0 소셜 로그인 구현" --isolated
-
-# 진행 상황 확인
 claude-pilot status
-
-# 완료 후 PR 생성
 claude-pilot merge --pr
 ```
 
-### 사례 2: 버그 수정
+### 긴급 버그 수정
 
 ```bash
-# 긴급 버그 수정 (빠른 처리)
-claude-pilot mission "결제 실패 시 롤백 누락 버그 수정" --priority P1 --direct
-
-# 수정 후 즉시 병합
+claude-pilot mission "결제 실패 롤백 누락 수정" --priority P1 --direct
 claude-pilot merge --direct
 ```
 
-### 사례 3: 대규모 리팩토링
+### 대규모 리팩토링
 
 ```bash
-# 크로스-모듈 리팩토링
-claude-pilot mission "인증 시스템 JWT에서 Session 기반으로 전환" \
-  --isolated \
-  --on-complete pr
+claude-pilot mission "인증 시스템 JWT→Session 전환" \
+  --isolated --on-complete pr
 
-# 장시간 작업 시 상태 확인
+# 실시간 상태 확인
 claude-pilot -o stream status
 ```
 
-### 사례 4: 중단된 미션 재개
+### 중단된 미션 재개
 
 ```bash
-# 미션 목록 확인
 claude-pilot list
-
-# 중단된 미션 재개 (이전 진행 상황 유지)
 claude-pilot resume mission-2024-01-15-abc123
-```
-
----
-
-## 성능 튜닝
-
-### 작업 규모별 권장 설정
-
-#### 소규모 작업 (단일 파일, 간단한 수정)
-
-```toml
-[multi_agent]
-enabled = false  # 단일 에이전트 모드
-
-[recovery.convergent_verification]
-max_rounds = 5
-```
-
-#### 중규모 작업 (여러 파일, 단일 모듈)
-
-```toml
-[multi_agent]
-enabled = true
-dynamic_mode = false  # 코어 에이전트만 사용
-
-[multi_agent.instances]
-planning = 2
-coder = 1
-
-[multi_agent.consensus]
-flat_threshold = 5
-```
-
-#### 대규모 작업 (크로스-모듈, 복잡한 의존성)
-
-```toml
-[multi_agent]
-enabled = true
-dynamic_mode = true   # Manifest 기반 동적 에이전트
-parallel_execution = true
-
-[multi_agent.instances]
-planning = 5
-coder = 3
-
-[multi_agent.consensus]
-enable_cross_visibility = true
-hierarchical_threshold = 8
-```
-
-### 리소스 최적화
-
-```toml
-# 컨텍스트 압축 (대규모 코드베이스)
-[context.compaction]
-enabled = true
-compaction_threshold = 0.6  # 더 공격적인 압축
-
-# 이벤트 정리 (장기 실행)
-[state]
-retention_days = 14  # 2주로 단축
-snapshot_interval_events = 50  # 더 자주 스냅샷
 ```
 
 ---
@@ -697,9 +417,9 @@ snapshot_interval_events = 50  # 더 자주 스냅샷
 
 ### 자주 발생하는 문제
 
-#### 미션이 타임아웃됩니다
+#### 미션 타임아웃
+
 ```toml
-# .pilot/config.toml
 [multi_agent.consensus]
 total_timeout_secs = 3600  # 1시간으로 증가
 
@@ -707,63 +427,43 @@ total_timeout_secs = 3600  # 1시간으로 증가
 mission_timeout_secs = 86400  # 1일로 증가
 ```
 
-#### 합의가 수렴하지 않습니다
+#### 합의 미수렴
+
 ```toml
 [multi_agent.consensus]
-max_rounds = 10            # 라운드 증가
-min_participants = 1       # 단순 작업용 (합의 필요 없음)
+max_rounds = 10
 enable_cross_visibility = true  # 반드시 활성화
 ```
 
-#### 검증이 무한 루프입니다
+#### 검증 무한 루프
+
 ```toml
 [recovery.convergent_verification]
-max_rounds = 5             # 라운드 제한
+max_rounds = 5
 max_fix_attempts_per_issue = 3
 ```
 
-#### Worktree 정리가 필요합니다
+#### Worktree 정리
+
 ```bash
-# 특정 미션 정리
 claude-pilot cleanup mission-123
-
-# 모든 Worktree 정리
 claude-pilot cleanup --all
-```
-
-#### OAuth 인증 문제
-```bash
-# Claude Code CLI 재인증
-claude auth login
 ```
 
 ### 디버깅
 
 ```bash
-# 상세 로그 활성화
+# 상세 로그
 claude-pilot -v mission "..."
 
 # 더 상세한 로그
 RUST_LOG=debug claude-pilot mission "..."
 
-# JSON 출력으로 상태 확인
+# JSON 상태 확인
 claude-pilot -o json status mission-123
-
-# 스트리밍으로 실시간 확인
-claude-pilot -o stream mission "..."
 
 # 이벤트 로그 조회
 sqlite3 .pilot/events.db "SELECT * FROM events ORDER BY timestamp DESC LIMIT 20;"
-```
-
-### 로그 위치
-
-```
-.pilot/
-├── logs/
-│   ├── mission-{id}.log      # 미션별 로그
-│   └── claude-pilot.log      # 전체 로그
-└── events.db                 # 이벤트 저장소
 ```
 
 ---
@@ -773,18 +473,9 @@ sqlite3 .pilot/events.db "SELECT * FROM events ORDER BY timestamp DESC LIMIT 20;
 ### 빌드 & 테스트
 
 ```bash
-# 빌드
-cargo build
 cargo build --release
-
-# 테스트
-cargo test               # 유닛 테스트
-cargo test --lib         # 라이브러리 테스트만
-cargo clippy             # 린트
-
-# E2E 테스트 (실제 LLM 호출)
-cargo test --test real_e2e_multi_agent_tests -- --ignored --nocapture
-cargo test --test cross_workspace_consensus_e2e -- --ignored --nocapture
+cargo test --lib
+cargo clippy
 ```
 
 ### 프로젝트 구조
@@ -792,24 +483,13 @@ cargo test --test cross_workspace_consensus_e2e -- --ignored --nocapture
 ```
 claude-pilot/
 ├── src/
-│   ├── agent/              # 에이전트 시스템
-│   │   ├── multi/          # 멀티 에이전트 핵심
-│   │   │   ├── core/       # 에이전트 기본 타입
-│   │   │   ├── shared/     # 공유 계약/타입
-│   │   │   ├── context/    # 컨텍스트 조합
-│   │   │   ├── messaging/  # P2P 메시징
-│   │   │   ├── session/    # 세션 관리
-│   │   │   ├── rules/      # 도메인 규칙 (WHAT)
-│   │   │   └── skills/     # 작업 스킬 (HOW)
-│   │   └── task_agent.rs   # Claude Code CLI 인터페이스
-│   ├── orchestration/      # 미션 오케스트레이션
-│   ├── state/              # 이벤트 소싱
-│   ├── workspace/          # 워크스페이스 관리
-│   ├── recovery/           # 복구 & 수렴적 검증
-│   └── verification/       # 검증 시스템
-├── tests/                  # 통합 테스트
-├── CLAUDE.md               # AI 에이전트 개발 가이드 (영어)
-└── README.md               # 사용자 가이드 (한글)
+│   ├── agent/multi/      # 멀티 에이전트 핵심
+│   ├── orchestration/    # 미션 오케스트레이션
+│   ├── state/            # 이벤트 소싱
+│   └── verification/     # 검증 시스템
+├── tests/                # 통합 테스트
+├── CLAUDE.md             # AI 개발 가이드
+└── README.md             # 사용자 가이드
 ```
 
 ---
@@ -820,7 +500,7 @@ MIT License
 
 ---
 
-## 버전 정보
+## 버전
 
 - Rust Edition: 2024
 - MSRV: 1.92.0

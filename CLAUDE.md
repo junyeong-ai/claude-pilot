@@ -1,138 +1,125 @@
 # Claude-Pilot
 
-AI coding orchestrator that compensates for LLM limitations through evidence-based planning and convergent quality verification.
+AI 코딩 오케스트레이터 - 증거 기반 계획과 수렴적 검증으로 LLM 한계를 보완합니다.
 
 ---
 
-## Design Philosophy
+## 설계 철학
 
-### Goal: Complete Until Verified
+### 목표: 검증될 때까지 완료 아님
 
-> Complete only when 2 consecutive deep reviews find zero issues.
+> 2회 연속 심층 리뷰에서 이슈 0건일 때만 완료.
 
-1. Complete the mission through iterative refinement
-2. Verify thoroughly with 2 consecutive clean rounds
-3. Escalate for intervention when stuck, then resume
+1. 반복적 개선으로 미션 완수
+2. 2회 연속 클린 라운드로 철저히 검증
+3. 막히면 에스컬레이션 후 재개
 
-### Universal Applicability
+### 범용성
 
-This system MUST work across:
-- **All languages**: Rust, Python, Go, Java, TypeScript, Ruby, PHP, C++, etc.
-- **All frameworks**: React, Django, Spring, Rails, Express, etc.
-- **All project structures**: monorepo, polyglot, microservices, libraries
+모든 환경에서 동작해야 함:
+- **모든 언어**: Rust, Python, Go, Java, TypeScript, Ruby, PHP, C++ 등
+- **모든 프레임워크**: React, Django, Spring, Rails, Express 등
+- **모든 구조**: 모노레포, 폴리글랏, 마이크로서비스, 라이브러리
 
-**Critical**: Any logic that assumes specific language/framework/structure will fail.
+**중요**: 특정 언어/프레임워크/구조를 가정하는 로직은 실패함.
 
 ---
 
-## Core Principle: Programmatic vs LLM
+## 핵심 원칙: Programmatic vs LLM
 
-### The Fundamental Trade-off
+### 트레이드오프
 
-```
-Programmatic Logic:
-  ✓ Fast, deterministic, no token cost
-  ✗ Can provide WRONG information that confuses LLM
-  ✗ Can RESTRICT LLM from using its judgment effectively
+| Programmatic | LLM |
+|-------------|-----|
+| ✓ 빠름, 결정적, 토큰 비용 없음 | ✓ 모호성과 다양한 컨텍스트 처리 |
+| ✗ 잘못된 정보로 LLM 혼란 가능 | ✓ 미지의 언어/프레임워크 적응 |
+| ✗ LLM 판단력 제한 가능 | ✗ 토큰 비용, 지연 |
 
-LLM Judgment:
-  ✓ Handles ambiguity and diverse contexts
-  ✓ Adapts to unknown languages/frameworks
-  ✗ Token cost, latency
-```
-
-### Key Insight: Bad Info is Worse Than No Info
-
-When programmatic logic provides **inaccurate or incomplete information**, it can:
-1. **Mislead LLM** into wrong decisions
-2. **Override LLM's correct intuition** with incorrect "facts"
-3. **Limit LLM's ability** to handle edge cases it would otherwise handle well
-
-### Decision Framework
+### 결정 프레임워크
 
 ```
-Should this be programmatic?
+Programmatic으로 해야 하나?
 
-1. Is it DETERMINISTIC? (same input → always same output)
-   NO  → Use LLM
+1. 결정적인가? (같은 입력 → 항상 같은 출력)
+   NO  → LLM 사용
    YES ↓
 
-2. Is it UNIVERSAL? (works for ALL languages/frameworks/projects)
-   NO  → Use LLM or Two-Phase
+2. 범용적인가? (모든 언어/프레임워크/프로젝트에서 동작)
+   NO  → LLM 또는 2단계 접근
    YES ↓
 
-3. What if it's WRONG?
-   Silent failure / Bad data → DON'T USE (let LLM decide)
-   Slight inefficiency only → OK to use
+3. 틀리면?
+   조용한 실패 / 잘못된 데이터 → 사용 금지 (LLM에 맡김)
+   약간의 비효율만 → 사용 OK
 ```
 
 ---
 
-## Safe vs Dangerous Patterns
+## 안전한 패턴 vs 위험한 패턴
 
-### Safe: Truly Universal Signals
+### 안전: 범용 시그널
 
-| Signal | Why Universal |
-|--------|---------------|
-| File existence | Filesystem API, language-agnostic |
-| File modification (mtime + size) | OS-level, deterministic |
-| HTTP status codes (429, 404, 502) | RFC-defined |
-| Exit code 0 vs non-zero | POSIX standard |
-| Marker files (Cargo.toml, package.json) | Spec-defined |
-| Mathematical convergence (N clean rounds) | Pure logic |
+| 시그널 | 이유 |
+|--------|------|
+| 파일 존재 여부 | Filesystem API, 언어 무관 |
+| 파일 수정 (mtime + size) | OS 레벨, 결정적 |
+| HTTP 상태 코드 (429, 404, 502) | RFC 정의 |
+| Exit code 0 vs non-zero | POSIX 표준 |
+| 마커 파일 (Cargo.toml, package.json) | 스펙 정의 |
+| 수학적 수렴 (N회 클린 라운드) | 순수 로직 |
 
-### Dangerous: Context-Dependent Patterns
+### 위험: 컨텍스트 의존
 
-| Pattern | Problem |
-|---------|---------|
-| Directory names (`build`, `dist`, `target`) | Mean different things per project |
-| "Test" detection | Varies by framework |
-| Error message keywords | English-only, format varies |
+| 패턴 | 문제 |
+|------|------|
+| 디렉토리명 (`build`, `dist`, `target`) | 프로젝트마다 의미 다름 |
+| "Test" 감지 | 프레임워크마다 다름 |
+| 에러 메시지 키워드 | 영어 전용, 포맷 다양 |
 
-**Rule**: If domain knowledge is needed to interpret → use LLM.
+**규칙**: 도메인 지식이 해석에 필요하면 → LLM 사용.
 
 ---
 
-## Anti-Patterns (MUST AVOID)
+## 안티패턴 (반드시 피할 것)
 
-### 1. Over-Confident Programmatic Logic
+### 1. 과신하는 Programmatic 로직
 
 ```rust
-// BAD: "target" is not always Rust output
+// BAD: "target"이 항상 Rust 출력은 아님
 if dir_name == "target" { skip_directory(); }
 
-// GOOD: ".git" is universally safe
+// GOOD: ".git"은 범용적으로 안전
 if dir_name == ".git" { skip_directory(); }
 ```
 
-### 2. English Keyword Matching
+### 2. 영어 키워드 매칭
 
 ```rust
-// BAD: Only works for English toolchains
+// BAD: 영어 툴체인만 동작
 if message.contains("error") { ... }
 
-// GOOD: Use error codes (language-agnostic)
+// GOOD: 에러 코드 사용 (언어 무관)
 if let Some(code) = extract_error_code(message) { ... }
 ```
 
-### 3. Interpreted Data Instead of Raw Data
+### 3. 해석된 데이터 대신 원본
 
 ```rust
-// BAD: Information loss, possibly wrong interpretation
+// BAD: 정보 손실, 잘못된 해석 가능
 prompt = "Build failed due to type error"
 
-// GOOD: Provide raw data
+// GOOD: 원본 데이터 제공
 prompt = format!("Exit code: {}\nOutput:\n{}", exit_code, raw_output)
 ```
 
-### 4. Guessing Agent Results
+### 4. 에이전트 결과 추측
 
 ```rust
-// BAD: Assume success without checking
+// BAD: 확인 없이 성공 가정
 let result = agent.execute(task).await;
 proceed_to_next_phase();
 
-// GOOD: Always check result status
+// GOOD: 항상 결과 상태 확인
 let result = agent.execute(task).await?;
 match result.status {
     TaskStatus::Success => proceed_to_next_phase(),
@@ -143,389 +130,279 @@ match result.status {
 
 ---
 
-## Architecture Overview
+## 아키텍처 개요
 
-### Execution Flow
+### 실행 흐름
 
-```
-User Mission
-    │
-    ▼
-┌─────────────┐   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-│  Phase 1    │──▶│  Phase 2    │──▶│  Phase 3    │──▶│  Phase 4    │
-│  Research   │   │  Planning   │   │ Implement   │   │  Verify     │
-│             │   │  (Consensus)│   │             │   │ (Convergent)│
-└─────────────┘   └─────────────┘   └─────────────┘   └─────────────┘
-                                                              │
-                                          ┌───────────────────┘
-                                          ▼
-                                   2 consecutive clean rounds?
-                                          │
-                                   YES: Complete │ NO: Fix & Retry
+```mermaid
+flowchart LR
+    M[User Mission] --> R[Phase 1<br/>Research]
+    R --> P[Phase 2<br/>Planning<br/>Consensus]
+    P --> I[Phase 3<br/>Implement]
+    I --> V[Phase 4<br/>Verify<br/>Convergent]
+    V --> C{2회 연속<br/>클린?}
+    C -->|NO| I
+    C -->|YES| D[Complete]
 ```
 
-### Core Components
+### 핵심 컴포넌트
 
-| Component | Purpose |
-|-----------|---------|
-| `MissionOrchestrator` | Manifest-based mission lifecycle management |
-| `Coordinator` | Multi-agent workflow orchestration |
-| `AdaptiveConsensusExecutor` | Strategy selection (direct/flat/hierarchical) |
-| `AgentPool` | Multi-instance agent management with qualified lookup |
-| `AgentMessageBus` | P2P messaging with event store integration |
-| `FileOwnershipManager` | Parallel edit conflict prevention with deferred queue |
-| `EventStore` | Durable event storage, replay/resume (SQLite) |
-| `ConvergentVerifier` | 2-pass mathematical convergence |
-| `WorkspaceRegistry` | Cross-workspace discovery and health monitoring |
-| `ConflictResolver` | P2P conflict resolution with deterministic yield |
-| `ContextComposer` | Module → Rules → Skills context composition |
-| `MetricsObserver` | Consensus observability and performance tracking |
-| `EventReplayer` | Event replay for mission resume |
+| 컴포넌트 | 용도 |
+|---------|------|
+| `MissionOrchestrator` | Manifest 기반 미션 생명주기 관리 |
+| `Coordinator` | 멀티 에이전트 워크플로우 조율 |
+| `AdaptiveConsensusExecutor` | 전략 선택 (direct/flat/hierarchical) |
+| `AgentPool` | 멀티 인스턴스 에이전트 관리 |
+| `AgentMessageBus` | P2P 메시징 + 이벤트 스토어 연동 |
+| `FileOwnershipManager` | 병렬 편집 충돌 방지 + deferred queue |
+| `EventStore` | 내구성 이벤트 저장, replay/resume (SQLite) |
+| `ConvergentVerifier` | 2-pass 수학적 수렴 |
+| `ConflictResolver` | P2P 충돌 해결 (결정적 yield) |
+| `ContextComposer` | Module → Rules → Skills 컨텍스트 합성 |
 
-### Agent Roles
+### 에이전트 역할
 
-| Agent | Role | Phase |
-|-------|------|-------|
-| `ResearchAgent` | Evidence gathering, codebase analysis | 1 |
-| `PlanningAgent` | Task decomposition, consensus participation | 2 |
-| `CoderAgent` | Implementation with P2P conflict handling | 3 |
-| `VerifierAgent` | Build/Test/Lint verification | 4 |
-| `ReviewerAgent` | Code quality review with project context | 4 |
-| `ArchitectAgent` | Design validation advisor | All |
-| `ArchitectureAgent` | Boundary enforcement from workspace | All |
-| `ModuleAgent` | Module-specific expertise (scope enforced) | 2-3 |
+| 에이전트 | 역할 | Phase |
+|---------|------|-------|
+| `ResearchAgent` | 증거 수집, 코드베이스 분석 | 1 |
+| `PlanningAgent` | 작업 분해, 합의 참여 | 2 |
+| `CoderAgent` | 구현, P2P 충돌 처리 | 3 |
+| `VerifierAgent` | Build/Test/Lint 검증 | 4 |
+| `ReviewerAgent` | 코드 품질 리뷰 | 4 |
+| `ArchitectAgent` | 설계 검증 조언자 | All |
+| `ModuleAgent` | 모듈별 전문성 (스코프 강제) | 2-3 |
 
-### Context Composition Pattern
+### 컨텍스트 합성 패턴
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Context Composition                         │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  Module   = WHERE (scope boundaries)  → Auto-loaded from manifest
-│  Rules    = WHAT  (domain knowledge)  → Auto-injected by context
-│  Skills   = HOW   (task methodology)  → Explicitly invoked
-│  Persona  = WHO   (role personality)  → Loaded for consensus role
-│                                                                 │
-│  ComposedContext = Module + Rules + Skills + Persona            │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Context["ComposedContext"]
+        M[Module<br/>WHERE - 스코프 경계]
+        R[Rules<br/>WHAT - 도메인 지식]
+        S[Skills<br/>HOW - 작업 방법론]
+        P[Persona<br/>WHO - 역할 성격]
+    end
+    M --> Final[Final Context]
+    R --> Final
+    S --> Final
+    P --> Final
 ```
 
 ---
 
-## Multi-Agent Consensus
+## 멀티 에이전트 합의
 
-### Hierarchical Consensus Tiers
+### 계층형 합의 Tier
 
-```
-Tier 0: Module    → All module agents in collective unit (cross-visibility ON)
-Tier 1: Group     → Group coordinators
-Tier 2: Domain    → Domain coordinators
-Tier 3: Workspace → Workspace coordinators
-Tier 4: CrossWS   → Cross-workspace coordination
-```
-
-### Consensus Strategy Selection
-
-```
-Participant Count:
-  1-3  agents → Direct execution (no voting)
-  4-10 agents → Flat consensus (single round)
-  11+  agents → Hierarchical consensus (tier-based)
+```mermaid
+flowchart BT
+    T0[Tier 0: Module<br/>cross-visibility ON] --> T1[Tier 1: Group]
+    T1 --> T2[Tier 2: Domain]
+    T2 --> T3[Tier 3: Workspace]
+    T3 --> T4[Tier 4: CrossWorkspace]
 ```
 
-### Cross-Visibility Consensus
+### 합의 전략 선택
 
-When `enable_cross_visibility = true`:
-- Agents see peer proposals in real-time
-- Enables semantic convergence (not just majority voting)
-- Results in more coherent, consistent plans
+| 참여자 수 | 전략 |
+|----------|------|
+| 1-3 | Direct 실행 (투표 없음) |
+| 4-10 | Flat 합의 (단일 라운드) |
+| 11+ | Hierarchical 합의 (tier 기반) |
 
-### P2P Message Types
+### P2P 메시지 타입
 
-| Message | Purpose |
-|---------|---------|
-| `ConsensusRequest` | Broadcast consensus start |
-| `ConsensusVote` | Agent vote to coordinator |
-| `ConflictAlert` | Broadcast file conflict detection |
-| `EvidenceShare` | Share research findings |
-| `TaskResult` | Report task completion |
-| `TaskAssignment` | Assign task to specific agent |
+| 메시지 | 용도 |
+|--------|------|
+| `ConsensusRequest` | 합의 시작 브로드캐스트 |
+| `ConsensusVote` | 에이전트 투표 → 코디네이터 |
+| `ConflictAlert` | 파일 충돌 감지 브로드캐스트 |
+| `EvidenceShare` | 연구 결과 공유 |
+| `TaskResult` | 작업 완료 보고 |
+| `TaskAssignment` | 특정 에이전트에 작업 할당 |
 
 ---
 
-## Key Types Reference
+## 핵심 타입 레퍼런스
 
-### ConsensusResult (consensus.rs)
+### ConsensusResult
 
 ```rust
 pub enum ConsensusResult {
-    Agreed { plan, tasks, rounds, respondent_count },      // Full consensus
-    PartialAgreement { plan, dissents, unresolved },       // Majority agreed
-    NoConsensus { summary, blocking_conflicts },           // Failed to agree
+    Agreed { plan, tasks, rounds, respondent_count },      // 완전 합의
+    PartialAgreement { plan, dissents, unresolved },       // 과반 합의
+    NoConsensus { summary, blocking_conflicts },           // 합의 실패
 }
 ```
 
-### ConsensusOutcome (shared/types.rs)
-
-```rust
-pub enum ConsensusOutcome {
-    Converged,           // Full agreement reached
-    PartialConvergence,  // Partial agreement, can proceed
-    Escalated,           // Escalated to higher tier
-    Timeout,             // Timed out
-    Failed,              // Consensus failed
-}
-```
-
-### TaskStatus (core/result.rs)
+### TaskStatus
 
 ```rust
 pub enum TaskStatus {
-    Pending,      // Not started
-    InProgress,   // Currently executing
-    Success,      // Completed successfully
-    Failed,       // Failed with error
-    Deferred,     // Yielded due to conflict, retry later
-    Skipped,      // Skipped (dependency failed)
+    Pending,      // 미시작
+    InProgress,   // 실행 중
+    Success,      // 성공
+    Failed,       // 실패
+    Deferred,     // 충돌로 yield, 나중에 재시도
+    Skipped,      // 스킵 (의존성 실패)
 }
 ```
 
-### Agent ID Conventions
+### Agent ID 컨벤션
 
 ```
-Core agents:     {role}-{instance}     → research-0, coder-1, planning-2
-Module agents:   module-{id}           → module-auth, module-database
-Coordinators:    {tier}-{id}           → group-backend, domain-api
+코어 에이전트:   {role}-{instance}   → research-0, coder-1
+모듈 에이전트:   module-{id}         → module-auth, module-database
+코디네이터:     {tier}-{id}          → group-backend, domain-api
 ```
 
 ---
 
-## Event Sourcing
+## 이벤트 소싱
 
-### Event Flow
-
-```
-Mission → Events → EventStore (SQLite)
-                       │
-         ┌─────────────┼─────────────┐
-         ▼             ▼             ▼
-    Projections    Snapshots     Replay
-    (real-time)    (periodic)    (resume)
+```mermaid
+flowchart LR
+    Mission --> Events --> ES[(EventStore<br/>SQLite)]
+    ES --> Proj[Projections<br/>실시간]
+    ES --> Snap[Snapshots<br/>주기적]
+    ES --> Replay[Replay<br/>재개]
 ```
 
-### Key Events
+### 주요 이벤트
 
-| Event | Aggregate | Purpose |
-|-------|-----------|---------|
-| `MissionStarted` | Mission | Mission lifecycle start |
-| `ConsensusRoundStarted` | Consensus | Consensus round tracking |
-| `TierConsensusCompleted` | Consensus | Hierarchical tier result |
-| `TaskCompleted` | Task | Task execution result |
-| `VerificationRoundCompleted` | Verification | Convergent verification |
-| `CheckpointCreated` | Session | Durable checkpoint for resume |
+| 이벤트 | Aggregate | 용도 |
+|--------|-----------|------|
+| `MissionStarted` | Mission | 미션 시작 |
+| `ConsensusRoundStarted` | Consensus | 합의 라운드 추적 |
+| `TierConsensusCompleted` | Consensus | 계층 tier 결과 |
+| `TaskCompleted` | Task | 작업 완료 |
+| `VerificationRoundCompleted` | Verification | 수렴 검증 |
+| `CheckpointCreated` | Session | 재개용 체크포인트 |
 
 ---
 
-## Configuration
+## 설정
 
-### NON-NEGOTIABLE Settings
+### 변경 불가 설정
 
-These MUST be enforced - they define core quality guarantees:
+품질 보장의 핵심 - 반드시 적용:
 
 ```toml
 [recovery.convergent_verification]
-required_clean_rounds = 2      # Must be >= 2
-include_ai_review = true       # Must be true
+required_clean_rounds = 2      # 반드시 >= 2
+include_ai_review = true       # 반드시 true
 
 [quality]
-min_evidence_quality = 0.6     # Must be >= 0.5
-min_evidence_confidence = 0.5  # Must be >= 0.3
-require_verifiable_evidence = true  # Must be true
-
-[recovery.checkpoint]
-persist_evidence = true        # Must be true when require_verifiable_evidence
+min_evidence_quality = 0.6     # 반드시 >= 0.5
+require_verifiable_evidence = true  # 반드시 true
 ```
 
-### Key Configuration
+### 주요 설정
 
 ```toml
 [orchestrator]
 max_iterations = 100
-mission_timeout_secs = 604800  # 7 days
+mission_timeout_secs = 604800  # 7일
 
 [multi_agent]
-enabled = true                 # Default: false
-dynamic_mode = true            # Default: false (manifest-based)
+enabled = true
 parallel_execution = true
 
 [multi_agent.consensus]
 max_rounds = 5
-min_participants = 2
-total_timeout_secs = 1800
 enable_cross_visibility = true
-flat_threshold = 3             # <= this → direct/flat consensus
-hierarchical_threshold = 10    # > this → hierarchical
-
-[recovery.convergent_verification]
-required_clean_rounds = 2
-max_rounds = 10
-max_fix_attempts_per_issue = 5
+flat_threshold = 3             # <= 이하 → direct/flat
+hierarchical_threshold = 10    # > 초과 → hierarchical
 
 [state]
 database_path = ".pilot/events.db"
-retention_days = 30
 enable_snapshots = true
-snapshot_interval_events = 100
-
-[context.compaction]
-enabled = true
-compaction_threshold = 0.7     # Trigger at 70% context usage
 ```
 
 ---
 
-## Development Rules
+## 개발 규칙
 
-### 1. Use First (NON-NEGOTIABLE)
+### 1. Use First (변경 불가)
 
-When implementing a module, you MUST wire it into the system in the same change:
-- Every new module MUST have integration code
-- `cargo test` MUST exercise the new code path
-- Unused `pub` exports are bugs
+모듈 구현 시 반드시 같은 변경에서 시스템에 연결:
+- 모든 새 모듈은 통합 코드 필수
+- `cargo test`가 새 코드 경로 실행해야 함
+- 미사용 `pub` export는 버그
 
-### 2. Trust LLM Over Heuristics
+### 2. 휴리스틱보다 LLM 신뢰
 
-When in doubt:
-- Hardcoded logic that might be wrong → LLM
-- Fast but potentially inaccurate → LLM with caching
-- "I think this pattern works" → verify across 5+ languages first
+의심될 때:
+- 틀릴 수 있는 하드코딩 → LLM
+- 빠르지만 부정확할 수 있음 → 캐싱과 함께 LLM
+- "이 패턴이 동작할 것 같다" → 5개 이상 언어에서 먼저 검증
 
-### 3. Preserve Raw Data
+### 3. 원본 데이터 보존
 
-Always keep original data accessible for LLM fallback.
-Never discard information that LLM might need.
+LLM 폴백을 위해 항상 원본 데이터 접근 가능하게 유지.
+LLM이 필요로 할 수 있는 정보 절대 버리지 않기.
 
-### 4. Manifest-First Design
+### 4. Manifest 우선 설계
 
-Agent hierarchy MUST be derived from manifest:
-- `.claudegen/manifest.json` defines project structure
-- Modules, groups, domains, workspaces
-- Consensus tiers built from manifest structure
+에이전트 계층은 반드시 manifest에서 파생:
+- `.claudegen/manifest.json`이 프로젝트 구조 정의
+- 모듈, 그룹, 도메인, 워크스페이스
+- manifest 구조에서 합의 tier 구축
 
-### 5. Event Sourcing for Durability
+### 5. 내구성을 위한 이벤트 소싱
 
-All significant state changes emit events:
-- Enables replay/resume from any checkpoint
-- Provides audit trail
-- Supports long-running missions (7+ days)
-
-### 6. Deterministic Conflict Resolution
-
-P2P conflict resolution must be deterministic:
-- Agent ID comparison for yield decision
-- FileOwnershipManager for exclusive access
-- DeferredTaskQueue for retry after yield
+모든 중요한 상태 변경은 이벤트 발행:
+- 모든 체크포인트에서 replay/resume 가능
+- 감사 추적 제공
+- 장기 실행 미션 지원 (7일 이상)
 
 ---
 
-## Module Structure
-
-```
-src/
-├── agent/
-│   ├── multi/                 # Multi-agent system
-│   │   ├── core/              # Agent base types (AgentCore, TaskResult)
-│   │   ├── shared/            # Shared contracts (ConsensusOutcome, types)
-│   │   ├── context/           # Context composition (Module, Rules, Skills)
-│   │   ├── messaging/         # P2P messaging (Bus, Handler, Message)
-│   │   ├── session/           # Session management (checkpoint, state)
-│   │   ├── rules/             # Domain rules (WHAT)
-│   │   └── skills/            # Task skills (HOW)
-│   └── task_agent.rs          # Claude Code CLI interface
-├── orchestration/             # Mission orchestration
-├── state/                     # Event sourcing
-│   ├── events.rs              # Event definitions
-│   ├── event_store.rs         # SQLite persistence
-│   ├── projections.rs         # Real-time projections
-│   ├── replay.rs              # Event replay
-│   └── snapshots.rs           # Periodic snapshots
-├── workspace/                 # Workspace management
-├── recovery/                  # Recovery & convergent verification
-└── verification/              # Verification system
-```
-
----
-
-## Implementation Checklist
-
-Before adding ANY programmatic logic, verify:
-
-- [ ] Works for Rust, Python, Go, Java, TypeScript, Ruby, C++ (at minimum)
-- [ ] Works for monorepo, microservices, single-package projects
-- [ ] Works for non-English error messages and file names
-- [ ] If wrong, only causes inefficiency (not silent failure)
-- [ ] Raw data is preserved for LLM fallback
-- [ ] Has clear "I don't know" path that defers to LLM
-- [ ] Emits events for significant state changes
-- [ ] Supports replay/resume from checkpoint
-
-If ANY checkbox fails → use LLM or two-phase approach.
-
----
-
-## Quick Reference for AI Coding
+## AI 코딩 퀵 레퍼런스
 
 ### DO
 
-- ✅ Check `TaskStatus` before proceeding to next phase
-- ✅ Use `AgentId::*` constructors for consistent naming
-- ✅ Emit events via `EventStore` for state changes
-- ✅ Use `FileOwnershipManager` for concurrent file access
-- ✅ Handle `ConsensusResult::PartialAgreement` gracefully
-- ✅ Support `TaskStatus::Deferred` with retry mechanism
-- ✅ Preserve raw output in `AgentTaskResult`
-- ✅ Use `unpack_consensus_result()` for result decomposition
+- ✅ 다음 phase 전 `TaskStatus` 확인
+- ✅ 일관된 네이밍을 위해 `AgentId::*` 생성자 사용
+- ✅ 상태 변경 시 `EventStore`로 이벤트 발행
+- ✅ 동시 파일 접근에 `FileOwnershipManager` 사용
+- ✅ `TaskStatus::Deferred` 재시도 메커니즘 지원
+- ✅ `AgentTaskResult`에 원본 출력 보존
 
 ### DON'T
 
-- ❌ Assume English-only error messages
-- ❌ Hardcode directory patterns (build, dist, target)
-- ❌ Skip `required_clean_rounds = 2` verification
-- ❌ Ignore `Deferred` status (causes task loss)
-- ❌ Create unused `pub` exports
-- ❌ Interpret data before passing to LLM
-- ❌ Use blocking I/O in async contexts
-- ❌ Skip event emission for significant state changes
+- ❌ 영어 전용 에러 메시지 가정
+- ❌ 디렉토리 패턴 하드코딩 (build, dist, target)
+- ❌ `required_clean_rounds = 2` 검증 생략
+- ❌ `Deferred` 상태 무시 (작업 손실 발생)
+- ❌ 미사용 `pub` export 생성
+- ❌ LLM 전달 전 데이터 해석
+- ❌ 중요 상태 변경에 이벤트 발행 생략
 
-### Common Patterns
+### 공통 패턴
 
 ```rust
-// Pattern: Result unpacking
-let (outcome, plan, tasks, rounds) = executor.unpack_consensus_result(result);
-
-// Pattern: Deferred task handling
+// 패턴: Deferred 작업 처리
 if result.status == TaskStatus::Deferred {
     deferred_queue.push(task);
-    // Will be retried when file ownership released
+    // 파일 소유권 해제 시 재시도됨
 }
 
-// Pattern: Event emission
+// 패턴: 이벤트 발행
 event_store.append(DomainEvent::new(
     AggregateId::consensus(session_id),
     EventPayload::ConsensusRoundCompleted { ... }
 )).await?;
 
-// Pattern: File ownership
+// 패턴: 파일 소유권
 let guard = ownership_manager.acquire(file_path, agent_id).await?;
-// ... do work ...
-drop(guard);  // Automatically releases ownership
+// ... 작업 ...
+drop(guard);  // 자동 소유권 해제
 ```
 
 ---
 
-## Version
+## 버전
 
 - Rust Edition: 2024
 - MSRV: 1.92.0

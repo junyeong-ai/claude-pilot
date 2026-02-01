@@ -9,10 +9,10 @@ repository = "https://github.com/anthropics/claude-pilot"
 
 [dependencies]
 # Claude Agent SDK
-claude-agent = { path = "../claude-agent-rs", features = ["jsonl", "plugins"] }
+claude-agent = { version = "0.2", features = ["jsonl", "plugins"] }
 
 # Shared schema definitions
-modmap = { path = "../modmap" }
+modmap = "1.0"
 
 # Concurrent data structures
 dashmap = "6.1"
