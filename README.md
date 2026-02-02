@@ -1,506 +1,269 @@
 # Claude-Pilot
 
-> AI 코딩 오케스트레이터 - 증거 기반 계획, 멀티 에이전트 합의, 수렴적 품질 검증으로 완벽한 코드를 만듭니다.
+[![CI](https://github.com/junyeong-ai/claude-pilot/workflows/CI/badge.svg)](https://github.com/junyeong-ai/claude-pilot/actions)
+[![Rust](https://img.shields.io/badge/rust-1.92.0%2B-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
 
-## 왜 Claude-Pilot인가?
+> **[English](README.en.md)** | **한국어**
 
-| 기존 AI 코딩 | Claude-Pilot |
-|-------------|--------------|
-| ❌ 추측으로 코딩 | ✅ 증거 수집 후 계획 |
-| ❌ "완료!" 후 버그 발견 | ✅ 2회 연속 검증 통과까지 반복 |
-| ❌ 복잡한 작업에서 일관성 부족 | ✅ 멀티 에이전트 합의로 조율 |
-| ❌ 중단되면 처음부터 다시 | ✅ 이벤트 소싱으로 중단점에서 재개 |
+**AI 코딩 오케스트레이터** — 멀티 에이전트 합의 프로토콜과 이벤트 소싱으로 "완료"가 진짜 완료가 되도록 합니다.
 
 ---
 
-## 목차
+## 왜 Claude-Pilot인가?
 
-- [빠른 시작](#빠른-시작)
-- [핵심 개념](#핵심-개념)
-- [실행 흐름](#실행-흐름)
-- [CLI 명령어](#cli-명령어)
-- [설정](#설정)
-- [멀티 에이전트 시스템](#멀티-에이전트-시스템)
-- [고급 기능](#고급-기능)
-- [실제 사용 사례](#실제-사용-사례)
-- [문제 해결](#문제-해결)
+- **품질 보장** — 2회 연속 검증 통과 필수 (빌드/테스트/린트/리뷰)
+- **일관성** — 계층형 합의 프로토콜로 멀티 에이전트가 조율
+- **내구성** — 이벤트 소싱으로 중단점에서 즉시 재개
 
 ---
 
 ## 빠른 시작
 
-### 요구사항
-
-- Rust 1.92.0 이상
-- Git
-- Claude Code CLI 설치 및 OAuth 인증 완료
-
-### 설치
-
 ```bash
-git clone https://github.com/anthropics/claude-pilot.git
-cd claude-pilot
-cargo build --release
-cargo install --path .
-```
+# 설치
+git clone https://github.com/junyeong-ai/claude-pilot.git
+cd claude-pilot && cargo install --path .
 
-### 첫 미션 실행
-
-```bash
-# 1. 프로젝트 초기화
+# 프로젝트 초기화
 cd your-project
 claude-pilot init
 
-# 2. 미션 시작
+# 미션 실행
 claude-pilot mission "사용자 인증 기능 추가"
 ```
 
-### 격리 모드
-
-```bash
-# Worktree 격리 (권장) - 별도 디렉토리에서 작업
-claude-pilot mission "버그 수정" --isolated
-
-# 브랜치 격리 - 새 브랜치에서 작업
-claude-pilot mission "리팩토링" --branch
-
-# 직접 모드 - 현재 브랜치에서 바로 작업
-claude-pilot mission "문서 업데이트" --direct
-```
-
 ---
 
-## 핵심 개념
+## 핵심 아키텍처
 
-### 아키텍처
+### 멀티 에이전트 합의 프로토콜
 
 ```mermaid
 flowchart TB
-    subgraph Orchestration["오케스트레이션"]
-        MO[MissionOrchestrator<br/>미션 생명주기]
+    subgraph Tier4["Tier 4: CrossWorkspace"]
+        CW[Cross-Workspace Coordinator]
     end
 
-    subgraph Agents["에이전트 시스템"]
-        AP[AgentPool<br/>에이전트 풀]
-        CO[Coordinator<br/>조율/합의]
+    subgraph Tier3["Tier 3: Workspace"]
+        WS1[Workspace A]
+        WS2[Workspace B]
     end
 
-    subgraph State["상태 관리"]
-        ES[(EventStore<br/>이벤트 저장)]
-        RP[Replay/Resume<br/>재개 지원]
+    subgraph Tier2["Tier 2: Domain"]
+        D1[Backend Domain]
+        D2[Frontend Domain]
     end
 
-    MO --> AP
-    MO --> CO
-    CO --> ES
-    ES --> RP
-    AP --> CO
+    subgraph Tier1["Tier 1: Group"]
+        G1[API Group]
+        G2[DB Group]
+        G3[UI Group]
+    end
+
+    subgraph Tier0["Tier 0: Module (Cross-Visibility)"]
+        M1[auth]
+        M2[users]
+        M3[models]
+        M4[components]
+    end
+
+    M1 & M2 --> G1
+    M3 --> G2
+    M4 --> G3
+    G1 & G2 --> D1
+    G3 --> D2
+    D1 --> WS1
+    D2 --> WS1
+    WS1 & WS2 --> CW
 ```
 
-### 3가지 핵심 보장
-
-| 보장 | 설명 | 구현 |
-|------|------|------|
-| **품질 보장** | 2회 연속 검증 통과 필수 | ConvergentVerifier |
-| **일관성 보장** | 멀티 에이전트 합의 | Cross-Visibility Consensus |
-| **내구성 보장** | 중단점에서 재개 가능 | Event Sourcing (SQLite) |
+**합의 결과 (ConsensusResult):**
+- `Agreed` — 전체 합의 달성, 계획 확정
+- `PartialAgreement` — 과반 합의, 반대 의견 기록 후 진행
+- `NoConsensus` — 합의 실패, 상위 Tier로 에스컬레이션
 
 ---
 
-## 실행 흐름
+### 이벤트 소싱 기반 Replay/Resume
 
 ```mermaid
-flowchart TD
-    Start["사용자 인증 기능 추가"] --> P1
-
-    subgraph P1["Phase 1: Research"]
-        R1[코드베이스 분석]
-        R2[의존성 확인]
-        R3[증거 수집]
+flowchart LR
+    subgraph Mission["미션 실행"]
+        A[Task 실행] --> E1[TaskStarted]
+        E1 --> E2[TaskCompleted]
+        E2 --> E3[VerificationRound]
+        E3 --> E4[CheckpointCreated]
     end
 
-    P1 --> P2
-
-    subgraph P2["Phase 2: Planning"]
-        PL1[작업 분해]
-        PL2[Cross-visibility로 제안 공유]
-        PL3[합의 도출]
+    subgraph Store["EventStore (SQLite)"]
+        ES[(events.db)]
     end
 
-    P2 --> P3
-
-    subgraph P3["Phase 3: Implement"]
-        I1[코드 생성]
-        I2[파일 충돌 P2P 해결]
-        I3[FileOwnership 동기화]
+    subgraph Recovery["복구 시스템"]
+        SS[SnapshotStore]
+        ER[EventReplayer]
+        PJ[Projections]
     end
 
-    P3 --> P4
-
-    subgraph P4["Phase 4: Verify"]
-        V1[Build/Test/Lint]
-        V2[코드 리뷰]
-        V3[이슈 자동 수정]
-    end
-
-    P4 --> Check{클린?}
-    Check -->|NO| P3
-    Check -->|YES| Check2{2회 연속?}
-    Check2 -->|NO| P4
-    Check2 -->|YES| Done[완료!]
+    E1 & E2 & E3 & E4 --> ES
+    ES --> SS
+    ES --> ER
+    ER --> PJ
+    SS -.->|"load_latest()"| ER
+    ER -.->|"rebuild_projection()"| PJ
 ```
+
+**주요 이벤트:**
+| 이벤트 | 설명 |
+|--------|------|
+| `MissionCreated` | 미션 시작 |
+| `ConsensusRoundStarted` | 합의 라운드 시작 |
+| `TierConsensusCompleted` | Tier별 합의 완료 |
+| `TaskCompleted` | 작업 완료 |
+| `VerificationRound` | 검증 라운드 결과 |
+| `CheckpointCreated` | 체크포인트 저장 |
+| `SessionRecoveryStarted` | 세션 복구 시작 |
 
 ---
 
-## CLI 명령어
+### 실행 흐름
 
-### 미션 관리
+```mermaid
+flowchart LR
+    M[미션] --> R[Research<br/>증거 수집]
+    R --> P[Planning<br/>합의 계획]
+    P --> I[Implement<br/>코드 구현]
+    I --> V[Verify<br/>검증]
+    V --> C{2회 연속<br/>클린?}
+    C -->|No| I
+    C -->|Yes| D[ConvergenceAchieved]
+```
 
-| 명령어 | 설명 |
-|--------|------|
-| `claude-pilot init` | 프로젝트 초기화 |
-| `claude-pilot mission "<설명>"` | 미션 시작 |
-| `claude-pilot status [mission_id]` | 상태 확인 |
-| `claude-pilot list` | 모든 미션 목록 |
-| `claude-pilot logs <mission_id>` | 로그 확인 |
+**4 Phase:**
+1. **Research** — `EvidenceGatheringStarted` → `EvidenceFileDiscovered` → `EvidenceGatheringCompleted`
+2. **Planning** — `ConsensusRoundStarted` → `ConsensusVoteReceived` → `ConsensusRoundCompleted`
+3. **Implement** — `TaskStarted` → `TaskCompleted` (충돌 시 `ConsensusConflictDetected`)
+4. **Verify** — `VerificationRound` → `IssueDetected` → `IssueResolved` → `ConvergenceAchieved`
 
-### 미션 제어
+---
 
-| 명령어 | 설명 |
-|--------|------|
-| `claude-pilot pause <mission_id>` | 일시정지 (체크포인트 저장) |
-| `claude-pilot resume <mission_id>` | 중단점에서 재개 |
-| `claude-pilot cancel <mission_id>` | 취소 |
-| `claude-pilot retry <mission_id>` | 실패 지점부터 재시도 |
+## 주요 기능
 
-### 완료 후 작업
-
-| 명령어 | 설명 |
-|--------|------|
-| `claude-pilot merge <mission_id>` | 메인에 병합 |
-| `claude-pilot cleanup [mission_id]` | Worktree 정리 |
-
-### 주요 옵션
-
+### 미션 실행
 ```bash
---isolated              # Worktree 격리 모드 (권장)
---branch                # 브랜치 격리 모드
---direct                # 현재 브랜치에서 작업
---priority <P1|P2|P3>   # 우선순위 (P1=긴급)
--o json                 # JSON 출력
--o stream               # 실시간 스트리밍
--v, --verbose           # 상세 로그
+claude-pilot mission "OAuth 로그인 구현"           # 기본
+claude-pilot mission "버그 수정" --isolated        # Worktree 격리 (권장)
+claude-pilot mission "긴급 수정" --priority P1    # 우선순위
+```
+
+### 상태 & 제어
+```bash
+claude-pilot status                               # 현재 상태
+claude-pilot list                                 # 미션 목록
+claude-pilot pause mission-123                    # 일시정지
+claude-pilot resume mission-123                   # 재개 (이벤트 리플레이)
+claude-pilot retry mission-123                    # 실패 지점부터 재시도
+```
+
+### 완료 후
+```bash
+claude-pilot merge mission-123 --pr               # PR 생성
+claude-pilot cleanup mission-123                  # Worktree 정리
 ```
 
 ---
 
 ## 설정
 
-### 설정 파일 위치
-
-```
-your-project/
-├── .pilot/
-│   ├── config.toml       # 프로젝트 설정
-│   └── events.db         # 이벤트 저장소
-└── .claudegen/
-    └── manifest.json     # 모듈 구조 정의
-```
-
 ### 핵심 설정 (.pilot/config.toml)
-
 ```toml
-# 기본 설정
 [orchestrator]
 max_iterations = 100
-mission_timeout_secs = 604800  # 7일
+mission_timeout_secs = 604800      # 7일
 
-# 멀티 에이전트
 [multi_agent]
 enabled = true
 parallel_execution = true
 
-[multi_agent.instances]
-research = 1
-planning = 3      # 합의용
-coder = 2         # 병렬 구현
-verifier = 1
-
-# 합의 설정
 [multi_agent.consensus]
 max_rounds = 5
-enable_cross_visibility = true
-flat_threshold = 3        # 3명 이하 → 단일 라운드
-hierarchical_threshold = 10
+enable_cross_visibility = true     # Tier 0에서 제안 공유
 
-# 수렴적 검증 (변경 불가)
 [recovery.convergent_verification]
-required_clean_rounds = 2  # 필수
-include_ai_review = true   # 필수
+required_clean_rounds = 2          # 필수 (변경 불가)
+include_ai_review = true           # 필수 (변경 불가)
 
-# 이벤트 저장소
 [state]
 database_path = ".pilot/events.db"
 enable_snapshots = true
-```
-
-### 모듈 구조 정의 (.claudegen/manifest.json)
-
-```json
-{
-  "project": {
-    "name": "my-project",
-    "modules": [
-      {
-        "id": "auth",
-        "name": "인증 모듈",
-        "paths": ["src/auth/"],
-        "dependencies": ["models"],
-        "responsibility": "사용자 인증 및 권한 관리"
-      }
-    ]
-  }
-}
+snapshot_interval_events = 100
 ```
 
 ---
 
-## 멀티 에이전트 시스템
+## 명령어 참조
 
-### 에이전트 역할
+| 명령어 | 설명 |
+|--------|------|
+| `init` | 프로젝트 초기화 |
+| `mission <설명>` | 미션 시작 |
+| `status [id]` | 상태 확인 |
+| `list` | 미션 목록 |
+| `pause <id>` | 일시정지 (CheckpointCreated) |
+| `resume <id>` | 재개 (SessionRecoveryStarted) |
+| `retry <id>` | 재시도 |
+| `merge <id>` | 병합 |
+| `cleanup [id]` | 정리 |
 
-```mermaid
-flowchart LR
-    subgraph Phase1["Phase 1"]
-        RA[ResearchAgent<br/>증거 수집]
-    end
-
-    subgraph Phase2["Phase 2"]
-        PA[PlanningAgent ×3<br/>합의 계획]
-    end
-
-    subgraph Phase3["Phase 3"]
-        CA[CoderAgent ×2<br/>병렬 구현]
-    end
-
-    subgraph Phase4["Phase 4"]
-        VA[VerifierAgent<br/>검증]
-        RV[ReviewerAgent<br/>리뷰]
-    end
-
-    Phase1 --> Phase2 --> Phase3 --> Phase4
-```
-
-### 계층형 합의
-
-```mermaid
-flowchart BT
-    M[Tier 0: Module<br/>모듈별 에이전트] --> G[Tier 1: Group<br/>그룹 코디네이터]
-    G --> D[Tier 2: Domain<br/>도메인 코디네이터]
-    D --> W[Tier 3: Workspace<br/>워크스페이스]
-    W --> CW[Tier 4: CrossWorkspace<br/>전체 프로젝트]
-```
-
-### Cross-Visibility 합의
-
-```mermaid
-flowchart LR
-    subgraph Traditional["기존 방식"]
-        A1[Agent A] --> V1[다수결]
-        B1[Agent B] --> V1
-        C1[Agent C] --> V1
-        V1 --> R1[불일치 가능]
-    end
-
-    subgraph CrossVis["Cross-Visibility"]
-        A2[Agent A] <--> Share[실시간 공유]
-        B2[Agent B] <--> Share
-        C2[Agent C] <--> Share
-        Share --> R2[일관된 합의]
-    end
-```
-
----
-
-## 고급 기능
-
-### 이벤트 소싱 & 재개
-
-```mermaid
-flowchart LR
-    Mission --> Events --> ES[(EventStore)]
-    ES --> Replay[과거 재현]
-    ES --> Resume[중단점 재개]
-    ES --> Audit[이력 추적]
-```
-
-**사용 예시:**
-```bash
-# 중단된 미션 재개
-claude-pilot resume mission-123
-
-# 실패한 미션 재시도
-claude-pilot retry mission-123
-
-# 특정 체크포인트에서 재개
-claude-pilot resume mission-123 --checkpoint cp-456
-```
-
-### P2P 충돌 해결
-
-```mermaid
-sequenceDiagram
-    participant A as Coder A
-    participant FOM as FileOwnership
-    participant B as Coder B
-
-    A->>FOM: file.rs 소유권 요청
-    FOM-->>A: 소유권 획득
-    B->>FOM: file.rs 소유권 요청
-    FOM-->>B: 대기 (DeferredQueue)
-    A->>FOM: 작업 완료, 해제
-    FOM-->>B: 소유권 획득
-    B->>B: 자동 재시도
-```
-
-### 수렴적 검증 (2-Pass)
-
-```mermaid
-flowchart TD
-    R1[Round 1] --> C1{클린?}
-    C1 -->|No| Fix1[자동 수정] --> R1
-    C1 -->|Yes| R2[Round 2<br/>Clean #1]
-    R2 --> C2{클린?}
-    C2 -->|No| Fix2[자동 수정] --> R1
-    C2 -->|Yes| Done[2회 연속 클린<br/>수학적 수렴 달성!]
-```
-
----
-
-## 실제 사용 사례
-
-### 신규 기능 개발
-
-```bash
-claude-pilot mission "OAuth2.0 소셜 로그인 구현" --isolated
-claude-pilot status
-claude-pilot merge --pr
-```
-
-### 긴급 버그 수정
-
-```bash
-claude-pilot mission "결제 실패 롤백 누락 수정" --priority P1 --direct
-claude-pilot merge --direct
-```
-
-### 대규모 리팩토링
-
-```bash
-claude-pilot mission "인증 시스템 JWT→Session 전환" \
-  --isolated --on-complete pr
-
-# 실시간 상태 확인
-claude-pilot -o stream status
-```
-
-### 중단된 미션 재개
-
-```bash
-claude-pilot list
-claude-pilot resume mission-2024-01-15-abc123
-```
+### 옵션
+- `--isolated` — Worktree 격리 (권장)
+- `--priority <P1|P2|P3>` — 우선순위
+- `--pr` — PR 생성 (merge)
+- `-o json` — JSON 출력
+- `-v` — 상세 로그
 
 ---
 
 ## 문제 해결
 
-### 자주 발생하는 문제
+### 디버그 (이벤트 확인)
+```bash
+# 이벤트 로그 조회
+sqlite3 .pilot/events.db "SELECT event_type, timestamp FROM events ORDER BY global_seq DESC LIMIT 20;"
 
-#### 미션 타임아웃
-
-```toml
-[multi_agent.consensus]
-total_timeout_secs = 3600  # 1시간으로 증가
-
-[orchestrator]
-mission_timeout_secs = 86400  # 1일로 증가
+# 상세 로그
+RUST_LOG=debug claude-pilot mission "..."
 ```
 
-#### 합의 미수렴
-
+### 합의 미수렴
 ```toml
 [multi_agent.consensus]
 max_rounds = 10
-enable_cross_visibility = true  # 반드시 활성화
-```
-
-#### 검증 무한 루프
-
-```toml
-[recovery.convergent_verification]
-max_rounds = 5
-max_fix_attempts_per_issue = 3
-```
-
-#### Worktree 정리
-
-```bash
-claude-pilot cleanup mission-123
-claude-pilot cleanup --all
-```
-
-### 디버깅
-
-```bash
-# 상세 로그
-claude-pilot -v mission "..."
-
-# 더 상세한 로그
-RUST_LOG=debug claude-pilot mission "..."
-
-# JSON 상태 확인
-claude-pilot -o json status mission-123
-
-# 이벤트 로그 조회
-sqlite3 .pilot/events.db "SELECT * FROM events ORDER BY timestamp DESC LIMIT 20;"
+enable_cross_visibility = true     # Tier 0 Cross-Visibility 필수
 ```
 
 ---
 
-## 개발
+## 요구사항
 
-### 빌드 & 테스트
-
-```bash
-cargo build --release
-cargo test --lib
-cargo clippy
-```
-
-### 프로젝트 구조
-
-```
-claude-pilot/
-├── src/
-│   ├── agent/multi/      # 멀티 에이전트 핵심
-│   ├── orchestration/    # 미션 오케스트레이션
-│   ├── state/            # 이벤트 소싱
-│   └── verification/     # 검증 시스템
-├── tests/                # 통합 테스트
-├── CLAUDE.md             # AI 개발 가이드
-└── README.md             # 사용자 가이드
-```
+- Rust 1.92.0+
+- Git
+- Claude Code CLI (OAuth 인증 완료)
 
 ---
 
-## 라이선스
+## 지원
 
-MIT License
+- [GitHub Issues](https://github.com/junyeong-ai/claude-pilot/issues)
+- [개발자 가이드](CLAUDE.md)
 
 ---
 
-## 버전
+<div align="center">
 
-- Rust Edition: 2024
-- MSRV: 1.92.0
+**[English](README.en.md)** | **한국어**
+
+Made with Rust
+
+</div>
