@@ -1,16 +1,8 @@
 use std::path::PathBuf;
 
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Severity {
-    Critical,
-    Major,
-    Minor,
-    Info,
-}
+use crate::domain::Severity;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodeLocation {
@@ -104,15 +96,15 @@ impl AggregatedCoherence {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileChange {
+pub struct QualityFileChange {
     pub path: PathBuf,
-    pub change_type: FileChangeType,
+    pub change_type: QualityFileChangeType,
     pub content: Option<String>,
     pub diff: Option<String>,
 }
 
-impl FileChange {
-    pub fn new(path: impl Into<PathBuf>, change_type: FileChangeType) -> Self {
+impl QualityFileChange {
+    pub fn new(path: impl Into<PathBuf>, change_type: QualityFileChangeType) -> Self {
         Self {
             path: path.into(),
             change_type,
@@ -122,17 +114,17 @@ impl FileChange {
     }
 
     pub fn modified(path: impl Into<PathBuf>) -> Self {
-        Self::new(path, FileChangeType::Modified)
+        Self::new(path, QualityFileChangeType::Modified)
     }
 
     pub fn created(path: impl Into<PathBuf>) -> Self {
-        Self::new(path, FileChangeType::Added)
+        Self::new(path, QualityFileChangeType::Added)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum FileChangeType {
+pub enum QualityFileChangeType {
     Added,
     Modified,
     Deleted,

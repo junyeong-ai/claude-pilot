@@ -5,37 +5,20 @@
 //!
 //! Run with: cargo test --test consensus_protocol_e2e -- --ignored --nocapture
 
+mod test_helpers;
+
 use std::path::Path;
 use std::sync::Arc;
 
-use claude_pilot::agent::TaskAgent;
 use claude_pilot::agent::multi::consensus::{AgentProposal, ConsensusEngine, ConsensusResult};
 use claude_pilot::agent::multi::messaging::AgentMessageBus;
 use claude_pilot::agent::multi::shared::AgentId;
 use claude_pilot::agent::multi::{
-    AgentPoolBuilder, AgentRole, AgentTask, CoderAgent, PlanningAgent, ResearchAgent,
-    ReviewerAgent, SpecializedAgent, TaskContext, TaskPriority, VerifierAgent,
+    AgentPoolBuilder, AgentRole, AgentTask, CoderAgent, ResearchAgent, SpecializedAgent,
+    TaskContext, TaskPriority,
 };
-use claude_pilot::config::{AgentConfig, ConsensusConfig, MultiAgentConfig};
-use claude_pilot::state::EventStore;
+use claude_pilot::config::{ConsensusConfig, MultiAgentConfig};
 use tempfile::TempDir;
-
-/// Create TaskAgent with real LLM configuration.
-fn create_task_agent() -> Arc<TaskAgent> {
-    let config = AgentConfig::default();
-    Arc::new(TaskAgent::new(config))
-}
-
-/// Create all core agents.
-fn create_core_agents(task_agent: Arc<TaskAgent>) -> Vec<Arc<dyn SpecializedAgent>> {
-    vec![
-        ResearchAgent::with_id("research-0", Arc::clone(&task_agent)),
-        PlanningAgent::with_id("planning-0", Arc::clone(&task_agent)),
-        CoderAgent::with_id("coder-0", Arc::clone(&task_agent)),
-        VerifierAgent::with_id("verifier-0", Arc::clone(&task_agent)),
-        ReviewerAgent::with_id("reviewer-0", Arc::clone(&task_agent)),
-    ]
-}
 
 /// Create a simple test project.
 fn create_test_project(dir: &Path) {
@@ -76,12 +59,9 @@ async fn test_consensus_engine_with_proposals() {
     let project_dir = temp_dir.path();
     create_test_project(project_dir);
 
-    let events_dir = project_dir.join(".pilot/events");
-    std::fs::create_dir_all(&events_dir).unwrap();
-    let db_path = events_dir.join("events.db");
-    let event_store = Arc::new(EventStore::new(&db_path).unwrap());
+    let event_store = test_helpers::setup_event_store(project_dir);
 
-    let task_agent = create_task_agent();
+    let task_agent = test_helpers::create_task_agent();
     let message_bus =
         Arc::new(AgentMessageBus::new(256).with_event_store(Arc::clone(&event_store)));
 
@@ -105,7 +85,7 @@ async fn test_consensus_engine_with_proposals() {
         key_findings: vec![],
         blockers: vec![],
         related_files: vec!["src/lib.rs".into()],
-        composed_prompt: None,
+        manifest_context: None,
     };
 
     // Create research task to gather initial proposal
@@ -118,6 +98,7 @@ async fn test_consensus_engine_with_proposals() {
         context: context.clone(),
         priority: TaskPriority::Normal,
         role: Some(AgentRole::core_research()),
+
     };
 
     println!("  Running Research Agent to gather proposal...");
@@ -127,7 +108,7 @@ async fn test_consensus_engine_with_proposals() {
 
     let research_proposal = match research_result {
         Ok(r) => {
-            println!("  Research Success: {}", r.success);
+            println!("  Research Success: {}", r.is_success());
             r.output
         }
         Err(e) => {
@@ -146,6 +127,7 @@ async fn test_consensus_engine_with_proposals() {
         context: context.clone(),
         priority: TaskPriority::Normal,
         role: Some(AgentRole::core_coder()),
+
     };
 
     println!("\n  Running Coder Agent to gather proposal...");
@@ -155,7 +137,7 @@ async fn test_consensus_engine_with_proposals() {
 
     let coder_proposal = match coder_result {
         Ok(r) => {
-            println!("  Coder Success: {}", r.success);
+            println!("  Coder Success: {}", r.is_success());
             r.output
         }
         Err(e) => {
@@ -194,7 +176,7 @@ async fn test_consensus_engine_with_proposals() {
     }
 
     // Create agent pool for consensus
-    let agents = create_core_agents(Arc::clone(&task_agent));
+    let agents = test_helpers::create_core_agents(Arc::clone(&task_agent));
     let config = MultiAgentConfig::default();
     let pool = AgentPoolBuilder::new(config)
         .with_agents(agents)
@@ -244,6 +226,7 @@ async fn test_consensus_engine_with_proposals() {
                     dissents,
                     unresolved_conflicts,
                     respondent_count,
+                    ..
                 } => {
                     println!("△ PARTIAL AGREEMENT");
                     println!("  Respondents: {}", respondent_count);
@@ -333,12 +316,9 @@ async fn test_multi_round_consensus_voting() {
     let project_dir = temp_dir.path();
     create_test_project(project_dir);
 
-    let events_dir = project_dir.join(".pilot/events");
-    std::fs::create_dir_all(&events_dir).unwrap();
-    let db_path = events_dir.join("events.db");
-    let event_store = Arc::new(EventStore::new(&db_path).unwrap());
+    let event_store = test_helpers::setup_event_store(project_dir);
 
-    let task_agent = create_task_agent();
+    let task_agent = test_helpers::create_task_agent();
     let message_bus =
         Arc::new(AgentMessageBus::new(256).with_event_store(Arc::clone(&event_store)));
 
@@ -359,11 +339,11 @@ async fn test_multi_round_consensus_voting() {
         key_findings: vec![],
         blockers: vec![],
         related_files: vec!["src/lib.rs".into()],
-        composed_prompt: None,
+        manifest_context: None,
     };
 
     // Create multiple agents with different perspectives
-    let agents = create_core_agents(Arc::clone(&task_agent));
+    let agents = test_helpers::create_core_agents(Arc::clone(&task_agent));
     let config = MultiAgentConfig::default();
     let pool = AgentPoolBuilder::new(config)
         .with_agents(agents)
@@ -483,12 +463,9 @@ async fn test_consensus_with_message_bus() {
     let project_dir = temp_dir.path();
     create_test_project(project_dir);
 
-    let events_dir = project_dir.join(".pilot/events");
-    std::fs::create_dir_all(&events_dir).unwrap();
-    let db_path = events_dir.join("events.db");
-    let event_store = Arc::new(EventStore::new(&db_path).unwrap());
+    let event_store = test_helpers::setup_event_store(project_dir);
 
-    let task_agent = create_task_agent();
+    let task_agent = test_helpers::create_task_agent();
     let message_bus =
         Arc::new(AgentMessageBus::new(512).with_event_store(Arc::clone(&event_store)));
 
@@ -506,10 +483,10 @@ async fn test_consensus_with_message_bus() {
         key_findings: vec![],
         blockers: vec![],
         related_files: vec!["src/lib.rs".into()],
-        composed_prompt: None,
+        manifest_context: None,
     };
 
-    let agents = create_core_agents(Arc::clone(&task_agent));
+    let agents = test_helpers::create_core_agents(Arc::clone(&task_agent));
     let config = MultiAgentConfig::default();
     let pool = AgentPoolBuilder::new(config)
         .with_agents(agents)
@@ -597,7 +574,7 @@ async fn test_consensus_with_message_bus() {
         .filter(|m| {
             matches!(
                 m.message_type(),
-                claude_pilot::agent::multi::MessageType::ConsensusRequest
+                claude_pilot::agent::multi::AgentMessageType::ConsensusRequest
             )
         })
         .collect();
@@ -606,7 +583,7 @@ async fn test_consensus_with_message_bus() {
         .filter(|m| {
             matches!(
                 m.message_type(),
-                claude_pilot::agent::multi::MessageType::ConsensusVote
+                claude_pilot::agent::multi::AgentMessageType::ConsensusVote
             )
         })
         .collect();
@@ -615,7 +592,7 @@ async fn test_consensus_with_message_bus() {
         .filter(|m| {
             matches!(
                 m.message_type(),
-                claude_pilot::agent::multi::MessageType::ConflictAlert
+                claude_pilot::agent::multi::AgentMessageType::ConflictAlert
             )
         })
         .collect();

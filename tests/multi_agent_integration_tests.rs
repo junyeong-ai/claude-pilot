@@ -1,148 +1,14 @@
 //! Integration tests for multi-agent architecture.
 //!
-//! Tests the complete flow: context composition, messaging, and consensus.
+//! Tests messaging, consensus, and module context integration.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use claude_pilot::agent::multi::context::{ComposedContext, ContextComposer, PersonaLoader};
 use claude_pilot::agent::multi::messaging::{
-    AgentMessage, AgentMessageBus, MessagePayload, MessageType,
+    AgentMessage, AgentMessageBus, AgentMessageType, MessagePayload,
 };
-use claude_pilot::agent::multi::rules::{ResolvedRules, RuleRegistry};
-use claude_pilot::agent::multi::skills::{SkillRegistry, SkillType};
-use claude_pilot::agent::multi::{AgentRole, AgentTask, RoleCategory, TaskContext, TaskPriority};
+use claude_pilot::domain::VoteDecision;
 use claude_pilot::state::{DomainEvent, EventPayload, EventStore};
-
-mod context_composition {
-    use super::*;
-
-    #[test]
-    fn test_empty_context_composition() {
-        let rules = RuleRegistry::new(PathBuf::new());
-        let skills = SkillRegistry::default();
-        let personas = PersonaLoader::default();
-        let composer = ContextComposer::new(&rules, &skills, &personas);
-
-        let role = AgentRole {
-            id: "coder".into(),
-            category: RoleCategory::Core,
-        };
-        let task = AgentTask {
-            id: "task-1".into(),
-            description: "Implement feature".into(),
-            context: TaskContext::default(),
-            priority: TaskPriority::Normal,
-            role: Some(role.clone()),
-        };
-
-        let ctx = composer.compose(&role, &task, &[]);
-        assert!(ctx.active_skill.is_some());
-        assert_eq!(ctx.active_skill, Some(SkillType::Implement));
-    }
-
-    #[test]
-    fn test_skill_selection_by_role() {
-        let rules = RuleRegistry::new(PathBuf::new());
-        let skills = SkillRegistry::default();
-        let personas = PersonaLoader::default();
-        let composer = ContextComposer::new(&rules, &skills, &personas);
-
-        let cases = vec![
-            ("reviewer", SkillType::CodeReview),
-            ("architect", SkillType::Plan),
-            ("planning", SkillType::Plan),
-        ];
-
-        for (role_id, expected_skill) in cases {
-            let role = AgentRole {
-                id: role_id.into(),
-                category: RoleCategory::Core,
-            };
-            let task = AgentTask {
-                id: "task-1".into(),
-                description: "Do something".into(),
-                context: TaskContext::default(),
-                priority: TaskPriority::Normal,
-                role: Some(role.clone()),
-            };
-
-            let ctx = composer.compose(&role, &task, &[]);
-            assert_eq!(
-                ctx.active_skill,
-                Some(expected_skill),
-                "Role {} should select {:?}",
-                role_id,
-                expected_skill
-            );
-        }
-    }
-
-    #[test]
-    fn test_skill_selection_by_task_description() {
-        let rules = RuleRegistry::new(PathBuf::new());
-        let skills = SkillRegistry::default();
-        let personas = PersonaLoader::default();
-        let composer = ContextComposer::new(&rules, &skills, &personas);
-
-        let coder_role = AgentRole {
-            id: "coder".into(),
-            category: RoleCategory::Core,
-        };
-
-        let cases = vec![
-            ("Debug the login issue", SkillType::Debug),
-            ("Fix bug in authentication", SkillType::Debug),
-            ("Refactor the auth module", SkillType::Refactor),
-            ("Restructure the codebase", SkillType::Refactor),
-            ("Add new feature", SkillType::Implement),
-        ];
-
-        for (description, expected_skill) in cases {
-            let task = AgentTask {
-                id: "task-1".into(),
-                description: description.into(),
-                context: TaskContext::default(),
-                priority: TaskPriority::Normal,
-                role: Some(coder_role.clone()),
-            };
-
-            let ctx = composer.compose(&coder_role, &task, &[]);
-            assert_eq!(
-                ctx.active_skill,
-                Some(expected_skill),
-                "Task '{}' should select {:?}",
-                description,
-                expected_skill
-            );
-        }
-    }
-
-    #[test]
-    fn test_composed_context_contains_skill_methodology() {
-        let rules = RuleRegistry::new(PathBuf::new());
-        let skills = SkillRegistry::default();
-        let personas = PersonaLoader::default();
-        let composer = ContextComposer::new(&rules, &skills, &personas);
-
-        let ctx = composer.compose_for_skill(SkillType::CodeReview, &[], "review code");
-
-        assert!(ctx.system_prompt.contains("Code Review"));
-        assert_eq!(ctx.active_skill, Some(SkillType::CodeReview));
-    }
-
-    #[test]
-    fn test_rule_count_in_context() {
-        let ctx = ComposedContext {
-            system_prompt: "test".into(),
-            injected_rules: ResolvedRules::new(),
-            active_skill: None,
-            persona_name: None,
-        };
-
-        assert_eq!(ctx.rule_count(), 0);
-    }
-}
 
 mod messaging {
     use super::*;
@@ -155,7 +21,7 @@ mod messaging {
         let msg = AgentMessage::new(
             "sender",
             "agent-1",
-            MessagePayload::Text {
+            MessagePayload::Broadcast {
                 content: "hello".into(),
             },
         );
@@ -175,7 +41,7 @@ mod messaging {
 
         let msg = AgentMessage::broadcast(
             "coordinator",
-            MessagePayload::Text {
+            MessagePayload::Broadcast {
                 content: "announcement".into(),
             },
         );
@@ -196,7 +62,7 @@ mod messaging {
         let msg = AgentMessage::new(
             "sender",
             "agent-1",
-            MessagePayload::Text {
+            MessagePayload::Broadcast {
                 content: "result".into(),
             },
         );
@@ -222,7 +88,7 @@ mod messaging {
     #[tokio::test]
     async fn test_filtered_receiver() {
         let bus = AgentMessageBus::new(16);
-        let mut filtered = bus.subscribe_filtered("agent-1", vec![MessageType::ConsensusVote]);
+        let mut filtered = bus.subscribe_filtered("agent-1", vec![AgentMessageType::ConsensusVote]);
 
         bus.try_send(AgentMessage::new(
             "sender",
@@ -238,7 +104,7 @@ mod messaging {
             "agent-1",
             MessagePayload::ConsensusVote {
                 round: 1,
-                decision: claude_pilot::state::VoteDecision::Approve,
+                decision: claude_pilot::domain::VoteDecision::Approve,
                 rationale: "looks good".into(),
             },
         ))
@@ -246,21 +112,22 @@ mod messaging {
 
         let received = filtered.recv().await.unwrap();
         assert!(received.is_some());
-        assert_eq!(received.unwrap().message_type(), MessageType::ConsensusVote);
+        assert_eq!(received.unwrap().message_type(), AgentMessageType::ConsensusVote);
     }
 
     #[test]
     fn test_consensus_vote_message() {
         let msg = AgentMessage::consensus_vote(
             "reviewer-0",
+            "group-coordinator-backend",
             1,
-            claude_pilot::state::VoteDecision::Approve,
+            claude_pilot::domain::VoteDecision::Approve,
             "looks good".into(),
         );
 
         assert_eq!(msg.from, "reviewer-0");
-        assert_eq!(msg.to, "coordinator");
-        assert_eq!(msg.message_type(), MessageType::ConsensusVote);
+        assert_eq!(msg.to, "group-coordinator-backend");
+        assert_eq!(msg.message_type(), AgentMessageType::ConsensusVote);
     }
 }
 
@@ -272,25 +139,10 @@ mod event_sourcing {
         let temp_dir = std::env::temp_dir().join(format!("test_events_{}", std::process::id()));
         let store = Arc::new(EventStore::new(&temp_dir).unwrap());
 
-        let event = DomainEvent::new(
-            "mission-1",
-            EventPayload::AgentTaskAssigned {
-                agent_id: "coder-0".into(),
-                task_id: "task-1".into(),
-                role: "coder".into(),
-            },
-        );
+        let event = DomainEvent::task_started("mission-1", "task-1", "Implement auth module");
         store.append(event).await.unwrap();
 
-        let event = DomainEvent::new(
-            "mission-1",
-            EventPayload::AgentTaskCompleted {
-                agent_id: "coder-0".into(),
-                task_id: "task-1".into(),
-                success: true,
-                duration_ms: 1500,
-            },
-        );
+        let event = DomainEvent::task_completed("mission-1", "task-1", vec!["src/auth.rs".into()], 1500);
         store.append(event).await.unwrap();
 
         let events = store.query("mission-1", 0).await.unwrap();
@@ -298,11 +150,11 @@ mod event_sourcing {
 
         assert!(matches!(
             &events[0].payload,
-            EventPayload::AgentTaskAssigned { agent_id, .. } if agent_id == "coder-0"
+            EventPayload::TaskStarted { task_id, .. } if task_id == "task-1"
         ));
         assert!(matches!(
             &events[1].payload,
-            EventPayload::AgentTaskCompleted { success: true, .. }
+            EventPayload::TaskCompleted { task_id, .. } if task_id == "task-1"
         ));
 
         std::fs::remove_dir_all(&temp_dir).ok();
@@ -318,7 +170,7 @@ mod event_sourcing {
             EventPayload::AgentMessageSent {
                 from_agent: "coordinator".into(),
                 to_agent: "coder-0".into(),
-                message_type: "task_assignment".into(),
+                message_type: claude_pilot::agent::multi::AgentMessageType::TaskAssignment,
                 correlation_id: "corr-123".into(),
             },
         );
@@ -329,7 +181,7 @@ mod event_sourcing {
             EventPayload::AgentMessageReceived {
                 from_agent: "coordinator".into(),
                 to_agent: "coder-0".into(),
-                message_type: "task_assignment".into(),
+                message_type: claude_pilot::agent::multi::AgentMessageType::TaskAssignment,
                 correlation_id: "corr-123".into(),
             },
         );
@@ -339,84 +191,6 @@ mod event_sourcing {
         assert_eq!(events.len(), 2);
 
         std::fs::remove_dir_all(&temp_dir).ok();
-    }
-}
-
-mod skills_registry {
-    use super::*;
-
-    #[test]
-    fn test_all_skills_available() {
-        let registry = SkillRegistry::default();
-
-        let skill_types = [
-            SkillType::CodeReview,
-            SkillType::Implement,
-            SkillType::Plan,
-            SkillType::Debug,
-            SkillType::Refactor,
-        ];
-
-        for skill_type in skill_types {
-            let skill = registry.get(skill_type);
-            assert!(
-                !skill.methodology.is_empty(),
-                "{:?} should have methodology",
-                skill_type
-            );
-        }
-    }
-
-    #[test]
-    fn test_skill_type_from_name() {
-        assert_eq!(
-            SkillType::from_name("code-review"),
-            Some(SkillType::CodeReview)
-        );
-        assert_eq!(
-            SkillType::from_name("implement"),
-            Some(SkillType::Implement)
-        );
-        assert_eq!(SkillType::from_name("plan"), Some(SkillType::Plan));
-        assert_eq!(SkillType::from_name("debug"), Some(SkillType::Debug));
-        assert_eq!(SkillType::from_name("refactor"), Some(SkillType::Refactor));
-        assert_eq!(SkillType::from_name("unknown"), None);
-    }
-}
-
-mod architect_agent {
-    use super::*;
-
-    #[test]
-    fn test_architect_skill_selection() {
-        let rules = RuleRegistry::new(PathBuf::new());
-        let skills = SkillRegistry::default();
-        let personas = PersonaLoader::default();
-        let composer = ContextComposer::new(&rules, &skills, &personas);
-
-        let role = AgentRole {
-            id: "architect".into(),
-            category: RoleCategory::Advisor,
-        };
-        let task = AgentTask {
-            id: "task-1".into(),
-            description: "Review design decisions".into(),
-            context: TaskContext::default(),
-            priority: TaskPriority::Normal,
-            role: Some(role.clone()),
-        };
-
-        let ctx = composer.compose(&role, &task, &[]);
-        assert_eq!(ctx.active_skill, Some(SkillType::Plan));
-    }
-
-    #[test]
-    fn test_architect_role_category() {
-        let role = AgentRole {
-            id: "architect".into(),
-            category: RoleCategory::Advisor,
-        };
-        assert!(role.is_planning_relevant());
     }
 }
 
@@ -432,7 +206,7 @@ mod new_event_payloads {
             .append(DomainEvent::agent_spawned(
                 "m-1",
                 "architect-0",
-                "architect",
+                claude_pilot::agent::multi::identity::RoleType::Architect,
                 None,
             ))
             .await
@@ -453,7 +227,7 @@ mod new_event_payloads {
         assert!(matches!(
             &events[0].payload,
             EventPayload::AgentSpawned { agent_id, role, .. }
-                if agent_id == "architect-0" && role == "architect"
+                if agent_id == "architect-0" && *role == claude_pilot::agent::multi::identity::RoleType::Architect
         ));
         assert!(matches!(
             &events[1].payload,
@@ -467,40 +241,28 @@ mod new_event_payloads {
     }
 
     #[tokio::test]
-    async fn test_context_injection_events() {
+    async fn test_manifest_context_injection_event() {
         let temp_dir = std::env::temp_dir().join(format!("test_context_{}", std::process::id()));
         let store = Arc::new(EventStore::new(&temp_dir).unwrap());
 
         store
-            .append(DomainEvent::rules_injected(
+            .append(DomainEvent::manifest_context_injected(
                 "m-1",
                 "coder-0",
                 "t-1",
-                3,
-                vec!["tech".into(), "domain".into()],
-            ))
-            .await
-            .unwrap();
-        store
-            .append(DomainEvent::skill_activated(
-                "m-1",
-                "coder-0",
-                "t-1",
-                "implement",
-            ))
-            .await
-            .unwrap();
-        store
-            .append(DomainEvent::persona_loaded(
-                "m-1",
-                "reviewer-0",
-                "code-reviewer",
+                vec!["auth".into(), "api".into()],
             ))
             .await
             .unwrap();
 
         let events = store.query("m-1", 0).await.unwrap();
-        assert_eq!(events.len(), 3);
+        assert_eq!(events.len(), 1);
+
+        assert!(matches!(
+            &events[0].payload,
+            EventPayload::ManifestContextInjected { agent_id, task_id, module_ids }
+                if agent_id == "coder-0" && task_id == "t-1" && module_ids.len() == 2
+        ));
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }
@@ -526,7 +288,7 @@ mod new_event_payloads {
                 1,
                 "domain-auth-0",
                 "auth",
-                "approve",
+                VoteDecision::Approve,
                 0.85,
             ))
             .await

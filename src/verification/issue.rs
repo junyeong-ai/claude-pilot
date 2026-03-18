@@ -1,20 +1,33 @@
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use super::Check;
 use crate::agent::TaskAgent;
+use crate::domain::Severity;
 use crate::error::Result;
 use crate::utils::truncate_with_marker;
+
+/// Lazily-compiled regex for structured compiler output (file:line:col: level: message).
+/// Using OnceLock avoids re-compiling on every call to `try_structured_extraction`.
+static STRUCTURED_OUTPUT_PATTERN: OnceLock<Regex> = OnceLock::new();
+
+fn structured_output_pattern() -> &'static Regex {
+    STRUCTURED_OUTPUT_PATTERN.get_or_init(|| {
+        Regex::new(r"(?m)^([^\s:]+):(\d+):(?:\d+:)?\s*(error|warning|note|info|hint):\s*(.+)$")
+            .expect("static structured output regex must compile")
+    })
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Issue {
     pub id: String,
     pub category: IssueCategory,
-    pub severity: IssueSeverity,
+    pub severity: Severity,
     pub message: String,
     pub file: Option<String>,
     pub line: Option<usize>,
@@ -28,7 +41,7 @@ impl Issue {
 
     pub fn new(
         category: IssueCategory,
-        severity: IssueSeverity,
+        severity: Severity,
         message: impl Into<String>,
         confidence: f32,
     ) -> Self {
@@ -43,7 +56,7 @@ impl Issue {
 
     pub fn with_message_limit(
         category: IssueCategory,
-        severity: IssueSeverity,
+        severity: Severity,
         message: impl Into<String>,
         confidence: f32,
         max_length: usize,
@@ -322,27 +335,6 @@ impl IssueCategory {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum IssueSeverity {
-    Info,
-    Warning,
-    Error,
-    Critical,
-}
-
-impl std::fmt::Display for IssueSeverity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Info => write!(f, "INFO"),
-            Self::Warning => write!(f, "WARN"),
-            Self::Error => write!(f, "ERROR"),
-            Self::Critical => write!(f, "CRITICAL"),
-        }
-    }
-}
 
 /// LLM-based issue extraction for universal language support.
 /// Replaces programmatic parsing with LLM classification.
@@ -364,7 +356,7 @@ struct ExtractedIssue {
     /// Issue category determined by LLM
     category: IssueCategory,
     /// Issue severity determined by LLM
-    severity: IssueSeverity,
+    severity: Severity,
     /// Error message (cleaned, normalized by LLM)
     message: String,
     /// File path if visible in output
@@ -445,11 +437,6 @@ impl IssueExtractor {
         }
     }
 
-    pub fn with_max_output_length(mut self, length: usize) -> Self {
-        self.max_output_length = length;
-        self
-    }
-
     /// Two-stage extraction: programmatic first, LLM only for ambiguous cases.
     pub async fn extract(&self, output: &str, check_type: Check) -> Result<Vec<Issue>> {
         if output.trim().is_empty() {
@@ -503,10 +490,7 @@ impl IssueExtractor {
     fn try_structured_extraction(&self, output: &str, check_type: Check) -> ProgrammaticResult {
         // Pattern: file:line:col: error/warning: message
         // Works for: gcc, clang, rustc, tsc, eslint, go, python, etc.
-        let structured_pattern = regex::Regex::new(
-            r"(?m)^([^\s:]+):(\d+):(?:\d+:)?\s*(error|warning|note|info|hint):\s*(.+)$",
-        )
-        .unwrap();
+        let structured_pattern = structured_output_pattern();
 
         let mut issues = Vec::new();
 
@@ -582,23 +566,23 @@ impl IssueExtractor {
     /// - Build/TypeCheck → likely Error (compilation failures block execution)
     /// - Lint → likely Warning (style issues don't block execution)
     /// - Test → Error (test failures are actionable)
-    fn infer_severity_from_check_type(check_type: Check, captured_level: &str) -> IssueSeverity {
+    fn infer_severity_from_check_type(check_type: Check, captured_level: &str) -> Severity {
         // Try known English patterns first (many compilers use English keywords)
         let level_lower = captured_level.to_lowercase();
         match level_lower.as_str() {
-            "error" => return IssueSeverity::Error,
-            "warning" | "warn" => return IssueSeverity::Warning,
-            "note" | "info" | "hint" => return IssueSeverity::Info,
+            "error" => return Severity::Error,
+            "warning" | "warn" => return Severity::Warning,
+            "note" | "info" | "hint" => return Severity::Info,
             _ => {}
         }
 
         // Unknown level text (possibly non-English) → infer from check_type
         match check_type {
-            Check::Build | Check::TypeCheck | Check::Test => IssueSeverity::Error,
-            Check::Lint => IssueSeverity::Warning,
+            Check::Build | Check::TypeCheck | Check::Test => Severity::Error,
+            Check::Lint => Severity::Warning,
             // File operations and custom checks default to Error (actionable)
             Check::FileCreated | Check::FileModified | Check::FileDeleted | Check::Custom => {
-                IssueSeverity::Error
+                Severity::Error
             }
         }
     }
@@ -789,7 +773,7 @@ Do NOT fabricate issues - only extract what's actually in the output."
 
         vec![Issue::new(
             category,
-            IssueSeverity::Error,
+            Severity::Error,
             message,
             Self::FALLBACK_LOW_CONFIDENCE,
         )]
@@ -859,7 +843,7 @@ mod tests {
     fn test_signature_with_file_and_line() {
         let issue = Issue::new(
             IssueCategory::BuildError,
-            IssueSeverity::Error,
+            Severity::Error,
             "some error",
             TEST_CONFIDENCE,
         )
@@ -871,13 +855,13 @@ mod tests {
     fn test_signature_preserves_semantic_differences() {
         let issue1 = Issue::new(
             IssueCategory::BuildError,
-            IssueSeverity::Error,
+            Severity::Error,
             "expected 3 arguments but got 5",
             TEST_CONFIDENCE,
         );
         let issue2 = Issue::new(
             IssueCategory::BuildError,
-            IssueSeverity::Error,
+            Severity::Error,
             "expected 10 arguments but got 2",
             TEST_CONFIDENCE,
         );
@@ -888,14 +872,14 @@ mod tests {
     fn test_matches_same_location() {
         let issue1 = Issue::new(
             IssueCategory::BuildError,
-            IssueSeverity::Error,
+            Severity::Error,
             "error 1",
             TEST_CONFIDENCE,
         )
         .with_location("src/lib.rs", Some(10));
         let issue2 = Issue::new(
             IssueCategory::BuildError,
-            IssueSeverity::Error,
+            Severity::Error,
             "error 2",
             TEST_CONFIDENCE,
         )
@@ -907,14 +891,14 @@ mod tests {
     fn test_matches_different_location() {
         let issue1 = Issue::new(
             IssueCategory::BuildError,
-            IssueSeverity::Error,
+            Severity::Error,
             "error",
             TEST_CONFIDENCE,
         )
         .with_location("src/lib.rs", Some(10));
         let issue2 = Issue::new(
             IssueCategory::BuildError,
-            IssueSeverity::Error,
+            Severity::Error,
             "error",
             TEST_CONFIDENCE,
         )

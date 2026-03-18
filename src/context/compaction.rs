@@ -478,11 +478,11 @@ impl ContextCompactor {
         let key_findings: usize = context.key_findings.iter().map(|f| f.len()).sum();
         let blockers: usize = context.blockers.iter().map(|b| b.len()).sum();
         let related_files: usize = context.related_files.iter().map(|f| f.len()).sum();
-        let composed_prompt = context
-            .composed_prompt
+        let manifest_context = context
+            .manifest_context
             .as_ref()
             .map(|p| p.len())
             .unwrap_or(0);
-        (key_findings + blockers + related_files + composed_prompt) / 4
+        (key_findings + blockers + related_files + manifest_context) / 4
     }
 }

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Reason for creating a checkpoint.
@@ -93,7 +94,7 @@ impl CompactedContext {
 
 /// A checkpoint capturing session state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Checkpoint {
+pub struct SessionCheckpoint {
     /// Unique checkpoint ID.
     pub id: String,
     /// Session ID this checkpoint belongs to.
@@ -112,9 +113,7 @@ pub struct Checkpoint {
     pub in_progress_tasks: Vec<String>,
     /// Context budget used at checkpoint.
     pub context_used: u32,
-    /// Timestamp (milliseconds since session start).
-    #[serde(skip)]
-    pub created_at: Option<Instant>,
+    pub created_at: DateTime<Utc>,
     /// Metadata.
     pub metadata: HashMap<String, String>,
     /// Compacted context for LLM continuity.
@@ -125,10 +124,10 @@ pub struct Checkpoint {
     pub archive_ref: Option<ArchiveRef>,
 }
 
-impl Checkpoint {
+impl SessionCheckpoint {
     pub fn new(session_id: &str, reason: CheckpointReason) -> Self {
         Self {
-            id: format!("cp-{}", uuid_v4()),
+            id: format!("cp-{}", uuid::Uuid::new_v4()),
             session_id: session_id.to_string(),
             reason,
             refs: CheckpointRef {
@@ -142,7 +141,7 @@ impl Checkpoint {
             failed_tasks: Vec::new(),
             in_progress_tasks: Vec::new(),
             context_used: 0,
-            created_at: Some(Instant::now()),
+            created_at: Utc::now(),
             metadata: HashMap::new(),
             compacted_context: None,
             archive_ref: None,
@@ -192,7 +191,8 @@ impl Checkpoint {
     }
 
     pub fn age(&self) -> Option<Duration> {
-        self.created_at.map(|t| t.elapsed())
+        let elapsed = Utc::now() - self.created_at;
+        elapsed.to_std().ok()
     }
 
     pub fn summary(&self) -> String {
@@ -223,7 +223,7 @@ impl Checkpoint {
 #[derive(Debug, Clone)]
 pub struct RecoveryContext {
     /// The checkpoint to recover from.
-    pub checkpoint: Checkpoint,
+    pub checkpoint: SessionCheckpoint,
     /// Tasks to retry (were in-progress).
     pub tasks_to_retry: Vec<String>,
     /// Tasks to skip (already completed).
@@ -235,7 +235,7 @@ pub struct RecoveryContext {
 }
 
 impl RecoveryContext {
-    pub fn from_checkpoint(checkpoint: Checkpoint) -> Self {
+    pub fn from_checkpoint(checkpoint: SessionCheckpoint) -> Self {
         let tasks_to_retry = checkpoint.in_progress_tasks.clone();
         let tasks_to_skip = checkpoint.completed_tasks.clone();
         let notification_start_id = checkpoint.refs.notification_id;
@@ -257,9 +257,9 @@ impl RecoveryContext {
 
 /// Manager for checkpoint operations.
 #[derive(Debug)]
-pub struct CheckpointManager {
+pub struct SessionCheckpointManager {
     session_id: String,
-    checkpoints: Vec<Checkpoint>,
+    checkpoints: Vec<SessionCheckpoint>,
     storage_path: Option<PathBuf>,
     auto_checkpoint_interval: Duration,
     context_budget_threshold: f32,
@@ -267,7 +267,7 @@ pub struct CheckpointManager {
     max_checkpoints: usize,
 }
 
-impl CheckpointManager {
+impl SessionCheckpointManager {
     pub fn new(session_id: &str) -> Self {
         Self {
             session_id: session_id.to_string(),
@@ -280,11 +280,6 @@ impl CheckpointManager {
         }
     }
 
-    pub fn with_storage(mut self, path: PathBuf) -> Self {
-        self.storage_path = Some(path);
-        self
-    }
-
     pub fn with_auto_interval(mut self, interval: Duration) -> Self {
         self.auto_checkpoint_interval = interval;
         self
@@ -295,13 +290,14 @@ impl CheckpointManager {
         self
     }
 
+    #[cfg(test)]
     pub fn with_max_checkpoints(mut self, max: usize) -> Self {
         self.max_checkpoints = max.max(5);
         self
     }
 
     /// Create a checkpoint.
-    pub fn create(&mut self, checkpoint: Checkpoint) -> &Checkpoint {
+    pub fn create(&mut self, checkpoint: SessionCheckpoint) -> &SessionCheckpoint {
         self.checkpoints.push(checkpoint);
         self.cleanup_old_checkpoints();
 
@@ -311,7 +307,8 @@ impl CheckpointManager {
             tracing::warn!("Failed to persist checkpoint: {}", e);
         }
 
-        self.checkpoints.last().unwrap()
+        // SAFETY: we just pushed a checkpoint above, so last() is always Some
+        self.checkpoints.last().expect("checkpoints non-empty after push")
     }
 
     /// Create a checkpoint for phase transition.
@@ -323,8 +320,8 @@ impl CheckpointManager {
         completed: Vec<String>,
         failed: Vec<String>,
         in_progress: Vec<String>,
-    ) -> &Checkpoint {
-        let cp = Checkpoint::new(
+    ) -> &SessionCheckpoint {
+        let cp = SessionCheckpoint::new(
             &self.session_id,
             CheckpointReason::PhaseTransition {
                 from: from.to_string(),
@@ -345,8 +342,8 @@ impl CheckpointManager {
         threshold: u32,
         refs: CheckpointRef,
         phase: &str,
-    ) -> &Checkpoint {
-        let cp = Checkpoint::new(
+    ) -> &SessionCheckpoint {
+        let cp = SessionCheckpoint::new(
             &self.session_id,
             CheckpointReason::ContextBudgetThreshold { used, threshold },
         )
@@ -365,10 +362,10 @@ impl CheckpointManager {
         completed: Vec<String>,
         failed: Vec<String>,
         in_progress: Vec<String>,
-    ) -> Option<&Checkpoint> {
+    ) -> Option<&SessionCheckpoint> {
         if self.last_auto_checkpoint.elapsed() >= self.auto_checkpoint_interval {
             self.last_auto_checkpoint = Instant::now();
-            let cp = Checkpoint::new(&self.session_id, CheckpointReason::Scheduled)
+            let cp = SessionCheckpoint::new(&self.session_id, CheckpointReason::Scheduled)
                 .with_refs(refs)
                 .with_phase(phase)
                 .with_tasks(completed, failed, in_progress);
@@ -387,18 +384,8 @@ impl CheckpointManager {
     }
 
     /// Get the latest checkpoint.
-    pub fn latest(&self) -> Option<&Checkpoint> {
+    pub fn latest(&self) -> Option<&SessionCheckpoint> {
         self.checkpoints.last()
-    }
-
-    /// Get checkpoint by ID.
-    pub fn get(&self, id: &str) -> Option<&Checkpoint> {
-        self.checkpoints.iter().find(|cp| cp.id == id)
-    }
-
-    /// Get all checkpoints.
-    pub fn all(&self) -> &[Checkpoint] {
-        &self.checkpoints
     }
 
     /// Create recovery context from latest checkpoint.
@@ -407,20 +394,9 @@ impl CheckpointManager {
             .map(|cp| RecoveryContext::from_checkpoint(cp.clone()))
     }
 
-    /// Create recovery context from specific checkpoint.
-    pub fn create_recovery_context_from(&self, checkpoint_id: &str) -> Option<RecoveryContext> {
-        self.get(checkpoint_id)
-            .map(|cp| RecoveryContext::from_checkpoint(cp.clone()))
-    }
-
     /// Count checkpoints.
     pub fn len(&self) -> usize {
         self.checkpoints.len()
-    }
-
-    /// Check if empty.
-    pub fn is_empty(&self) -> bool {
-        self.checkpoints.is_empty()
     }
 
     fn cleanup_old_checkpoints(&mut self) {
@@ -447,25 +423,6 @@ impl CheckpointManager {
         Ok(())
     }
 
-    /// Load checkpoints from disk.
-    pub fn load_from_disk(session_id: &str, path: &PathBuf) -> std::io::Result<Self> {
-        let json = std::fs::read_to_string(path)?;
-        let checkpoints: Vec<Checkpoint> = serde_json::from_str(&json)?;
-
-        Ok(Self {
-            session_id: session_id.to_string(),
-            checkpoints,
-            storage_path: Some(path.clone()),
-            auto_checkpoint_interval: Duration::from_secs(300),
-            context_budget_threshold: 0.8,
-            last_auto_checkpoint: Instant::now(),
-            max_checkpoints: 50,
-        })
-    }
-}
-
-fn uuid_v4() -> String {
-    uuid::Uuid::new_v4().to_string()
 }
 
 #[cfg(test)]
@@ -474,7 +431,7 @@ mod tests {
 
     #[test]
     fn test_checkpoint_creation() {
-        let mut manager = CheckpointManager::new("session-1");
+        let mut manager = SessionCheckpointManager::new("session-1");
 
         let refs = CheckpointRef {
             notification_id: 42,
@@ -501,7 +458,7 @@ mod tests {
 
     #[test]
     fn test_recovery_context() {
-        let mut manager = CheckpointManager::new("session-1");
+        let mut manager = SessionCheckpointManager::new("session-1");
 
         let refs = CheckpointRef {
             notification_id: 100,
@@ -528,7 +485,7 @@ mod tests {
 
     #[test]
     fn test_budget_threshold_check() {
-        let manager = CheckpointManager::new("session-1").with_budget_threshold(0.8);
+        let manager = SessionCheckpointManager::new("session-1").with_budget_threshold(0.8);
 
         assert!(!manager.should_checkpoint_for_budget(7000, 10000));
         assert!(manager.should_checkpoint_for_budget(8000, 10000));
@@ -537,10 +494,10 @@ mod tests {
 
     #[test]
     fn test_max_checkpoints_cleanup() {
-        let mut manager = CheckpointManager::new("session-1").with_max_checkpoints(5);
+        let mut manager = SessionCheckpointManager::new("session-1").with_max_checkpoints(5);
 
         for i in 0..10 {
-            let cp = Checkpoint::new("session-1", CheckpointReason::Scheduled)
+            let cp = SessionCheckpoint::new("session-1", CheckpointReason::Scheduled)
                 .with_phase(&format!("phase-{}", i));
             manager.create(cp);
         }

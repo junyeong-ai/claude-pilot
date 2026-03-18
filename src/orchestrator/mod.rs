@@ -14,7 +14,6 @@ mod signal;
 pub use engine::Orchestrator;
 pub use focus::{
     CompletionValidation, DriftWarning, ExpectedScope, FileClassification, FocusTracker,
-    WarningSeverity,
 };
-pub use lifecycle::{LifecycleManager, LockGuard, LockInfo};
-pub use signal::SignalHandler;
+pub use lifecycle::{LifecycleManager, LockGuard, ProcessLockInfo};
+pub use signal::{Signal, SignalHandler};

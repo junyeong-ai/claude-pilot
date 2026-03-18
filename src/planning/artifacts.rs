@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::mission::{Priority, RiskLevel};
+use crate::mission::{MissionPriority, RiskLevel};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SpecArtifact {
@@ -17,7 +17,7 @@ pub struct SpecArtifact {
 pub struct UserStory {
     pub id: String,
     pub title: String,
-    pub priority: Priority,
+    pub priority: MissionPriority,
     pub description: String,
     pub acceptance_scenarios: Vec<AcceptanceScenario>,
     pub independent_test: String,

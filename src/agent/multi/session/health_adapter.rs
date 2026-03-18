@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::participant::ParticipantRegistry;
 use crate::agent::multi::AgentId;
+use crate::agent::multi::health::HealthStatus;
 
 /// Health status for a session participant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,10 +47,16 @@ pub struct ParticipantHealthMetrics {
     pub last_activity: Option<Instant>,
     /// Last check time.
     pub last_check: Instant,
+    stressed_response_ms: u64,
+    stressed_success_rate: f32,
+    unhealthy_response_ms: u64,
+    unhealthy_success_rate: f32,
+    min_data_points: u32,
 }
 
 impl Default for ParticipantHealthMetrics {
     fn default() -> Self {
+        let config = SessionHealthConfig::default();
         Self {
             status: ParticipantHealth::Unknown,
             response_times_ms: Vec::new(),
@@ -60,11 +67,27 @@ impl Default for ParticipantHealthMetrics {
             current_load: 0,
             last_activity: None,
             last_check: Instant::now(),
+            stressed_response_ms: config.stressed_response_ms,
+            stressed_success_rate: config.stressed_success_rate,
+            unhealthy_response_ms: config.unhealthy_response_ms,
+            unhealthy_success_rate: config.unhealthy_success_rate,
+            min_data_points: config.min_data_points,
         }
     }
 }
 
 impl ParticipantHealthMetrics {
+    pub fn with_thresholds(config: &SessionHealthConfig) -> Self {
+        Self {
+            stressed_response_ms: config.stressed_response_ms,
+            stressed_success_rate: config.stressed_success_rate,
+            unhealthy_response_ms: config.unhealthy_response_ms,
+            unhealthy_success_rate: config.unhealthy_success_rate,
+            min_data_points: config.min_data_points,
+            ..Default::default()
+        }
+    }
+
     /// Record a task completion.
     pub fn record_completion(&mut self, response_time_ms: u64) {
         self.tasks_completed += 1;
@@ -103,12 +126,15 @@ impl ParticipantHealthMetrics {
 
         self.last_check = Instant::now();
 
-        // Determine health status
-        if total_tasks < 3 {
+        if total_tasks < self.min_data_points {
             self.status = ParticipantHealth::Unknown;
-        } else if self.success_rate < 0.5 || self.avg_response_ms > 300_000 {
+        } else if self.success_rate < self.unhealthy_success_rate
+            || self.avg_response_ms > self.unhealthy_response_ms
+        {
             self.status = ParticipantHealth::Unhealthy;
-        } else if self.success_rate < 0.8 || self.avg_response_ms > 120_000 {
+        } else if self.success_rate < self.stressed_success_rate
+            || self.avg_response_ms > self.stressed_response_ms
+        {
             self.status = ParticipantHealth::Stressed;
         } else {
             self.status = ParticipantHealth::Healthy;
@@ -133,10 +159,16 @@ impl ParticipantHealthMetrics {
 /// Configuration for health monitoring.
 #[derive(Debug, Clone)]
 pub struct SessionHealthConfig {
-    /// Maximum average response time before considered stressed (ms).
-    pub max_avg_response_ms: u64,
-    /// Minimum success rate before considered unhealthy.
-    pub min_success_rate: f32,
+    /// Response time threshold for "stressed" status (ms).
+    pub stressed_response_ms: u64,
+    /// Success rate threshold for "stressed" status.
+    pub stressed_success_rate: f32,
+    /// Response time threshold for "unhealthy" status (ms).
+    pub unhealthy_response_ms: u64,
+    /// Success rate threshold for "unhealthy" status.
+    pub unhealthy_success_rate: f32,
+    /// Minimum completed tasks before health assessment.
+    pub min_data_points: u32,
     /// Idle time before considering agent stalled.
     pub stall_timeout: Duration,
     /// Check interval.
@@ -148,9 +180,12 @@ pub struct SessionHealthConfig {
 impl Default for SessionHealthConfig {
     fn default() -> Self {
         Self {
-            max_avg_response_ms: 120_000, // 2 minutes
-            min_success_rate: 0.7,
-            stall_timeout: Duration::from_secs(600), // 10 minutes
+            stressed_response_ms: 120_000,
+            stressed_success_rate: 0.8,
+            unhealthy_response_ms: 300_000,
+            unhealthy_success_rate: 0.5,
+            min_data_points: 3,
+            stall_timeout: Duration::from_secs(600),
             check_interval: Duration::from_secs(30),
             max_unhealthy_retries: 3,
         }
@@ -184,7 +219,7 @@ impl SessionHealthTracker {
     pub fn register(&mut self, agent_id: &AgentId) {
         self.metrics
             .entry(agent_id.as_str().to_string())
-            .or_default();
+            .or_insert_with(|| ParticipantHealthMetrics::with_thresholds(&self.config));
     }
 
     /// Unregister a participant.
@@ -222,12 +257,12 @@ impl SessionHealthTracker {
     }
 
     /// Get health metrics for a participant.
-    pub fn get_metrics(&self, agent_id: &AgentId) -> Option<&ParticipantHealthMetrics> {
+    pub fn metrics(&self, agent_id: &AgentId) -> Option<&ParticipantHealthMetrics> {
         self.metrics.get(agent_id.as_str())
     }
 
-    /// Get health status for a participant.
-    pub fn get_health(&self, agent_id: &AgentId) -> ParticipantHealth {
+    /// Health status for a participant.
+    pub fn health(&self, agent_id: &AgentId) -> ParticipantHealth {
         self.metrics
             .get(agent_id.as_str())
             .map(|m| m.status)
@@ -248,7 +283,8 @@ impl SessionHealthTracker {
             let agent_id = participant.id.as_str();
 
             // Get or create metrics
-            let metrics = self.metrics.entry(agent_id.to_string()).or_default();
+            let metrics = self.metrics.entry(agent_id.to_string())
+                .or_insert_with(|| ParticipantHealthMetrics::with_thresholds(&self.config));
 
             // Update load from participant
             metrics.current_load = participant.current_load();
@@ -309,11 +345,11 @@ impl SessionHealthTracker {
         // Calculate overall status
         let total = healthy.len() + stressed.len() + unhealthy.len() + stalled.len();
         let overall_status = if unhealthy.len() + stalled.len() > total / 2 {
-            SessionHealthStatus::Critical
+            HealthStatus::Critical
         } else if stressed.len() + unhealthy.len() > total / 4 {
-            SessionHealthStatus::Degraded
+            HealthStatus::Degraded
         } else {
-            SessionHealthStatus::Healthy
+            HealthStatus::Healthy
         };
 
         // Calculate health score
@@ -383,18 +419,10 @@ impl SessionHealthTracker {
     }
 }
 
-/// Overall session health status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SessionHealthStatus {
-    Healthy,
-    Degraded,
-    Critical,
-}
-
 /// Health report for the session.
 #[derive(Debug, Clone)]
 pub struct SessionHealthReport {
-    pub status: SessionHealthStatus,
+    pub status: HealthStatus,
     pub health_score: f32,
     pub healthy_count: usize,
     pub stressed_count: usize,
@@ -414,7 +442,7 @@ impl SessionHealthReport {
     }
 
     pub fn has_critical_issues(&self) -> bool {
-        self.status == SessionHealthStatus::Critical
+        self.status == HealthStatus::Critical
     }
 
     pub fn needs_attention(&self) -> bool {
@@ -510,10 +538,10 @@ mod tests {
         let agent_id = AgentId::new("agent-1");
 
         tracker.register(&agent_id);
-        assert!(tracker.get_metrics(&agent_id).is_some());
+        assert!(tracker.metrics(&agent_id).is_some());
 
         tracker.unregister(&agent_id);
-        assert!(tracker.get_metrics(&agent_id).is_none());
+        assert!(tracker.metrics(&agent_id).is_none());
     }
 
     #[test]
@@ -528,13 +556,13 @@ mod tests {
             tracker.record_task_completion(&agent_id, 5000);
         }
 
-        let metrics = tracker.get_metrics(&agent_id).unwrap();
+        let metrics = tracker.metrics(&agent_id).unwrap();
         assert_eq!(metrics.tasks_completed, 5);
         assert_eq!(metrics.status, ParticipantHealth::Healthy);
 
         // Record a failure
         tracker.record_task_failure(&agent_id);
-        let metrics = tracker.get_metrics(&agent_id).unwrap();
+        let metrics = tracker.metrics(&agent_id).unwrap();
         assert_eq!(metrics.tasks_failed, 1);
     }
 
@@ -629,7 +657,7 @@ mod tests {
         tracker.register(&agent_id);
         tracker.update_load(&agent_id, 5);
 
-        let metrics = tracker.get_metrics(&agent_id).unwrap();
+        let metrics = tracker.metrics(&agent_id).unwrap();
         assert_eq!(metrics.current_load, 5);
     }
 }

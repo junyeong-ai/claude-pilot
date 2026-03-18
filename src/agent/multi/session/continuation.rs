@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use super::invocation::{FollowUp, FollowUpType, InvocationOutcome, InvocationResult};
+use super::invocation::{FollowUpType, InvocationOutcome, InvocationResult};
 use crate::agent::multi::AgentId;
 
 /// State of a continuation.
@@ -275,7 +275,7 @@ impl ContinuationCheckpoint {
         self
     }
 
-    pub fn get_state<T: for<'de> Deserialize<'de>>(&self) -> Option<T> {
+    pub fn state<T: for<'de> Deserialize<'de>>(&self) -> Option<T> {
         self.state
             .as_ref()
             .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -412,7 +412,7 @@ impl ContinuationManager {
     }
 
     /// Get a mutable continuation by ID.
-    pub fn get_mut(&mut self, id: &str) -> Option<&mut ContinuationState> {
+    pub fn state_mut(&mut self, id: &str) -> Option<&mut ContinuationState> {
         self.continuations.get_mut(id)
     }
 
@@ -599,31 +599,9 @@ pub fn generate_continuation_id(agent_id: &AgentId, task_id: &str) -> String {
     format!("cont-{}-{}-{}", agent_id.as_str(), task_id, timestamp)
 }
 
-/// Convert a FollowUp to continuation requirements.
-pub fn follow_up_to_requirements(follow_up: &FollowUp) -> ResumeRequirements {
-    let mut reqs = ResumeRequirements::new();
-
-    if let Some(delay) = follow_up.delay_secs {
-        reqs = reqs.with_delay(Duration::from_secs(delay as u64));
-    }
-
-    for dep in &follow_up.depends_on {
-        reqs = reqs.depends_on(dep);
-    }
-
-    if let Some(resource) = follow_up.context_data.get("resource") {
-        reqs = reqs.requires_lock(resource);
-    }
-
-    if let Some(req_id) = follow_up.context_data.get("request_id") {
-        reqs = reqs.awaits_coordination(req_id);
-    }
-
-    reqs
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::invocation::FollowUp;
     use super::*;
 
     fn create_pending_result(agent_id: &str, follow_ups: Vec<FollowUp>) -> InvocationResult {

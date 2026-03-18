@@ -277,13 +277,9 @@ impl GlobalIssueRegistry {
         self.issues.values().map(|e| e.fix_attempts).sum()
     }
 
-    /// Default threshold for persistent issue detection.
-    /// Matches `ConvergentVerificationConfig::persistent_issue_threshold` default.
-    pub const DEFAULT_PERSISTENT_THRESHOLD: u32 = 3;
-
     /// Get issues that are considered "persistent" (recurring and unresolved).
     /// An issue is persistent if it has occurred >= threshold times and remains unresolved.
-    /// Use `DEFAULT_PERSISTENT_THRESHOLD` when config is not available.
+    /// Threshold is typically sourced from `ConvergenceState::persistent_issue_threshold`.
     pub fn persistent_issues(&self, threshold: u32) -> Vec<&GlobalIssueEntry> {
         self.issues
             .values()
@@ -715,7 +711,7 @@ impl ConvergenceState {
         self.oscillation_count >= threshold
     }
 
-    pub fn get_oscillation_context(&self) -> OscillationContext {
+    pub fn oscillation_context(&self) -> OscillationContext {
         let reappearing_issues: Vec<String> = self
             .issue_registry
             .issues

@@ -61,8 +61,13 @@ impl MissionState {
         matches!(self, MissionState::Paused | MissionState::Escalated)
     }
 
-    pub fn can_retry(&self) -> bool {
+    pub fn can_create_retry_mission(&self) -> bool {
         matches!(self, MissionState::Failed | MissionState::Cancelled)
+    }
+
+    #[deprecated(note = "use can_create_retry_mission() - this does not imply an FSM transition")]
+    pub fn can_retry(&self) -> bool {
+        self.can_create_retry_mission()
     }
 
     pub fn can_cancel(&self) -> bool {

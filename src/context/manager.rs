@@ -267,10 +267,8 @@ impl ContextManager {
         context: &mut MissionContext,
         task_id: &str,
         summary: Option<String>,
-        files: Vec<String>,
+        files: &[String],
     ) {
-        let files_for_phase = files.clone();
-
         if let Some(entry) = context.task_registry.task_mut(task_id) {
             if let Some(s) = summary {
                 entry.set_summary(s);
@@ -293,7 +291,8 @@ impl ContextManager {
                 phase.completed_count += 1;
 
                 // Track files modified in this phase
-                for file in &files_for_phase {
+                // O(n) dedup is intentional: bounded by max_phase_files (config limit).
+                for file in files {
                     if phase.files_modified.len() < self.context_config.limits.max_phase_files
                         && !phase.files_modified.contains(file)
                     {
@@ -302,9 +301,9 @@ impl ContextManager {
                 }
 
                 // Add key change if files were modified
-                if !files_for_phase.is_empty() {
+                if !files.is_empty() {
                     phase.add_change(
-                        format!("{}: {} files", task_desc, files_for_phase.len()),
+                        format!("{}: {} files", task_desc, files.len()),
                         &self.context_config.limits,
                     );
                 }

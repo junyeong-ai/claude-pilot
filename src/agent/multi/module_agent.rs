@@ -200,13 +200,9 @@ impl SpecializedAgent for ModuleAgent {
             "Module agent executing"
         );
 
-        // Use composed_prompt from task context if available (set by Coordinator)
-        // This includes: Module context + optional Rules + optional Skill
-        let effective_prompt = task
-            .context
-            .composed_prompt
-            .as_deref()
-            .unwrap_or(&self.system_prompt);
+        // ModuleAgent already has full manifest context built into self.system_prompt.
+        // Ignore task.context.manifest_context — self.system_prompt takes priority.
+        let effective_prompt = &self.system_prompt;
 
         let prompt = AgentPromptBuilder::new(effective_prompt, "Module", task)
             .with_context(task)
@@ -225,7 +221,7 @@ impl SpecializedAgent for ModuleAgent {
                 // Validate scope of proposed changes
                 // Limit extraction to prevent DoS from malformed output
                 let max_files = (self.module.paths.len() * 2).clamp(20, 100);
-                let proposed_files = extract_files_from_output(&output, max_files);
+                let proposed_files = extract_files_from_output(&output, max_files, Some(working_dir));
                 let validation = self.validate_scope(&proposed_files);
 
                 let mut findings = Vec::new();

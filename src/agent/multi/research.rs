@@ -14,30 +14,8 @@ use super::traits::{
 };
 use crate::agent::TaskAgent;
 use crate::agent::multi::AgentIdentifier;
+use crate::config::ResearchConfig;
 use crate::error::Result;
-
-/// Maximum number of findings to extract from research output.
-///
-/// This limit balances comprehensiveness with performance and readability:
-/// - Prevents overwhelming downstream agents with excessive findings
-/// - Keeps context size manageable for consensus and planning phases
-/// - Encourages research output to be concise and focused on key insights
-///
-/// If research yields more than this limit, the agent should be more selective
-/// in what it reports rather than increasing this ceiling.
-const MAX_FINDINGS: usize = 20;
-
-/// Timeout for research task execution in seconds.
-///
-/// Research tasks involve codebase analysis and evidence gathering which can be
-/// time-consuming. A 5-minute timeout provides enough time for:
-/// - Semantic searches across large codebases
-/// - Reference finding and call hierarchy analysis
-/// - Pattern discovery and dependency mapping
-///
-/// This prevents research tasks from running indefinitely while allowing thorough
-/// exploration of the codebase.
-const RESEARCH_TIMEOUT_SECS: u64 = 300;
 
 const RESEARCH_SYSTEM_PROMPT: &str = r"# Research Agent
 
@@ -72,12 +50,18 @@ Provide structured findings:
 
 pub struct ResearchAgent {
     core: AgentCore,
+    config: ResearchConfig,
 }
 
 impl ResearchAgent {
     pub fn new(id: String, task_agent: Arc<TaskAgent>) -> Self {
+        Self::with_config(id, task_agent, ResearchConfig::default())
+    }
+
+    pub fn with_config(id: String, task_agent: Arc<TaskAgent>, config: ResearchConfig) -> Self {
         Self {
             core: AgentCore::new(id, AgentRole::core_research(), task_agent),
+            config,
         }
     }
 
@@ -93,7 +77,7 @@ impl ResearchAgent {
     ) -> Result<AgentTaskResult> {
         let result = self.execute(task, working_dir).await?;
 
-        if result.success && !result.findings.is_empty() {
+        if result.is_success() && !result.findings.is_empty() {
             let quality = self.compute_findings_quality(&result.findings);
             self.broadcast_evidence(message_bus, &result.findings, quality)
                 .await;
@@ -122,9 +106,9 @@ impl ResearchAgent {
         }
 
         let score_sum: u32 = findings.iter().map(|f| Self::score_finding(f)).sum();
-        // Max possible per finding: critical(150) + confidence(100) + file:line(60) + file(40) + pattern(35) + convention(20) + structured(10) + detailed(15) = 430
-        // Use 300 as practical max (unlikely to hit all bonuses)
-        let practical_max = findings.len() as f64 * 300.0;
+        // Max possible per finding: file:line(80) + paths(40) + structured(15) + length(20) + code(10) = 165
+        // Use 120 as practical max (unlikely to hit all bonuses simultaneously)
+        let practical_max = findings.len() as f64 * 120.0;
         (score_sum as f64 / practical_max).min(1.0)
     }
 
@@ -159,78 +143,78 @@ impl ResearchAgent {
         // Sort by score (descending) to prioritize more important findings
         findings.sort_by(|a, b| b.1.cmp(&a.1));
 
-        // Take top MAX_FINDINGS after sorting
         findings
             .into_iter()
-            .take(MAX_FINDINGS)
+            .take(self.config.max_findings)
             .map(|(finding, _)| finding)
             .collect()
     }
 
-    /// Scores a finding based on relevance indicators.
-    /// Higher scores indicate more important findings that should be prioritized.
+    /// Scores a finding using language-agnostic structural signals.
+    ///
+    /// Avoids English keyword matching (CLAUDE.md: universal system requirement).
+    /// Instead, detects structural patterns that indicate actionable, specific findings
+    /// regardless of the language the LLM responds in.
     fn score_finding(finding: &str) -> u32 {
-        let lower = finding.to_lowercase();
         let mut score = 0u32;
 
-        // Highest priority: Critical findings (security, blockers, risks)
-        if lower.contains("critical") || lower.contains("blocker") || lower.contains("risk") {
-            score += 150;
+        // File:line references (e.g., "src/auth.rs:45", "lib/utils.py:120")
+        // Pattern: path-like segment followed by `:` and digits
+        let has_file_line_ref = finding.chars().enumerate().any(|(i, c)| {
+            if c != ':' || i == 0 {
+                return false;
+            }
+            if !finding[i + 1..].chars().next().is_some_and(|d| d.is_ascii_digit()) {
+                return false;
+            }
+            let seg_start = finding[..i]
+                .rfind(|ch: char| ch.is_whitespace() || ch == '(' || ch == '[' || ch == '`')
+                .map_or(0, |pos| pos + 1);
+            let segment = &finding[seg_start..i];
+            (segment.contains('.') || segment.contains('/'))
+                && !segment.starts_with("//")
+                && !segment.contains("://")
+        });
+        if has_file_line_ref {
+            score += 80;
         }
 
-        // High priority: Explicit confidence scores or markers
-        if lower.contains("confidence:") || lower.contains("confidence score") {
-            score += 100;
-        }
-
-        // Medium-high priority: File references with locations (more specific)
-        if finding.contains(".rs:") || finding.contains(".ts:") || finding.contains(".js:") {
-            score += 60;
-        }
-
-        // Medium priority: General file references
-        if lower.contains(".rs")
-            || lower.contains(".ts")
-            || lower.contains(".js")
-            || lower.contains(".py")
-            || lower.contains(".go")
-        {
+        // Path references (segments with `/` and `.` — file paths)
+        let has_path_ref = finding.split_whitespace().any(|word| {
+            let clean = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != '.' && c != '_' && c != '-');
+            clean.contains('/') && clean.contains('.') && clean.len() > 3
+        });
+        if has_path_ref {
             score += 40;
         }
 
-        // Medium priority: Patterns, dependencies, or relationships
-        if lower.contains("pattern")
-            || lower.contains("dependency")
-            || lower.contains("relationship")
+        // Structured format (bullets, numbered lists, markdown headers)
+        let trimmed = finding.trim_start();
+        if trimmed.starts_with('-')
+            || trimmed.starts_with('*')
+            || trimmed.starts_with('#')
+            || trimmed.chars().next().is_some_and(|c| c.is_ascii_digit())
+                && trimmed.chars().nth(1).is_some_and(|c| c == '.' || c == ')')
         {
-            score += 35;
-        }
-
-        // Low-medium priority: Implementation details or conventions
-        if lower.contains("convention") || lower.contains("implements") || lower.contains("uses") {
-            score += 20;
-        }
-
-        // Boost for structured findings (bullets, numbers)
-        if finding.trim_start().starts_with('-')
-            || finding.trim_start().starts_with('*')
-            || finding
-                .trim_start()
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_digit())
-        {
-            score += 10;
-        }
-
-        // Penalize very short findings (likely less informative)
-        if finding.len() < 30 {
-            score = score.saturating_sub(15);
-        }
-
-        // Boost longer, more detailed findings
-        if finding.len() > 100 {
             score += 15;
+        }
+
+        // Length-based scoring (longer = more detailed = more useful)
+        if finding.len() > 200 {
+            score += 20;
+        } else if finding.len() > 100 {
+            score += 10;
+        } else if finding.len() < 30 {
+            score = score.saturating_sub(20);
+        }
+
+        // Code-like content (indented lines with brackets/parentheses)
+        let has_code_content = finding.lines().any(|line| {
+            let indent = line.len() - line.trim_start().len();
+            indent >= 2 && line.contains(['(', ')', '{', '}', '[', ']'])
+        });
+        if has_code_content {
+            score += 10;
         }
 
         score
@@ -261,7 +245,7 @@ impl SpecializedAgent for ResearchAgent {
         debug!(task_id = %task.id, "Research agent executing");
 
         let prompt = self.build_research_prompt(task);
-        let timeout = Duration::from_secs(RESEARCH_TIMEOUT_SECS);
+        let timeout = Duration::from_secs(self.config.timeout_secs);
         let output = self
             .core
             .task_agent
@@ -304,8 +288,8 @@ mod tests {
 
         let output = r#"## Findings
 - Found relevant file: src/auth.rs
-* Discovered pattern in src/lib.rs
-The implementation uses src/utils/helper.ts
+* Discovered something in src/lib.rs
+The code uses src/utils/helper.ts
 "#;
 
         let findings = agent.extract_findings(output);
@@ -317,46 +301,75 @@ The implementation uses src/utils/helper.ts
         let task_agent = Arc::new(TaskAgent::new(Default::default()));
         let agent = ResearchAgent::new("test".to_string(), task_agent);
 
-        // Create output with varying priority findings
-        let output = r#"This is a low priority finding without much detail.
-
-CRITICAL: Security vulnerability found in authentication module at src/auth.rs:45 that could allow unauthorized access.
-
-- Found relevant file: src/utils/helper.rs with utility functions
-
-This finding has confidence: 0.95 and indicates the main entry point is src/main.rs:10
-
-Discovered pattern: Repository pattern used throughout the codebase for data access
-
-Short note
-
-This is a detailed finding that explains the architecture uses a layered approach with clear separation of concerns. The presentation layer communicates with the business logic layer through well-defined interfaces."#;
+        // Findings with varying structural signals
+        let output = "This is a low priority finding without much detail.\n\n\
+            The main entry point is src/auth.rs:45 with authentication logic that handles user sessions and token validation for the API layer.\n\n\
+            - Found relevant file: src/utils/helper.rs with utility functions\n\n\
+            src/main.rs:10 references src/config/settings.rs:25 and both files contain important initialization code for the application startup sequence.\n\n\
+            Short\n\n\
+            This is a detailed finding that explains the architecture.\n  fn handle_request(req: Request) {\n    validate(req.token)\n  }\nThe layered approach with clear separation of concerns ensures maintainability across the entire codebase including all modules.";
 
         let findings = agent.extract_findings(output);
 
-        // Critical finding should be first
-        assert!(findings[0].contains("CRITICAL"));
+        // Finding with file:line refs + long text should be first (80+40+10+20=150 or similar)
+        assert!(
+            findings[0].contains(":10") || findings[0].contains(":25") || findings[0].contains(":45"),
+            "Top finding should contain file:line references"
+        );
 
-        // Confidence score finding should be high priority
-        assert!(findings.iter().take(3).any(|f| f.contains("confidence")));
-
-        // Very short findings should be deprioritized
-        let short_finding_pos = findings.iter().position(|f| f == "Short note");
-        assert!(short_finding_pos.is_none() || short_finding_pos.unwrap() > 3);
+        // Very short finding should be deprioritized
+        let short_pos = findings.iter().position(|f| f == "Short");
+        assert!(short_pos.is_none() || short_pos.unwrap() > 3);
     }
 
     #[test]
     fn test_score_finding() {
-        // Critical findings get highest scores
-        let critical_score = ResearchAgent::score_finding("CRITICAL: Issue in src/auth.rs:45");
-        let pattern_score = ResearchAgent::score_finding("- Discovered pattern in codebase");
+        // File:line reference scores highest
+        let file_line_score = ResearchAgent::score_finding(
+            "Found issue at src/auth.rs:45 in the authentication module"
+        );
+        // Bullet with path reference
+        let bullet_path_score = ResearchAgent::score_finding(
+            "- Located in src/utils/helper.rs within the project"
+        );
+        // Short finding with no structural signals
         let short_score = ResearchAgent::score_finding("Short note");
 
-        assert!(critical_score > pattern_score);
-        assert!(pattern_score > short_score);
+        assert!(file_line_score > bullet_path_score, "file:line should score higher than path-only");
+        assert!(bullet_path_score > short_score, "structured + path should score higher than short");
 
-        // Confidence scores should be high priority
-        let confidence_score = ResearchAgent::score_finding("Found file with confidence: 0.95");
-        assert!(confidence_score > pattern_score);
+        // Code-like content with indentation
+        let code_score = ResearchAgent::score_finding(
+            "The function signature is:\n  fn process(items: Vec<String>) -> Result<()>\nThis handles the main processing pipeline and returns errors for invalid input."
+        );
+        assert!(code_score > short_score, "code content should score higher than short note");
+
+        // Long detailed finding without file refs
+        let long_score = ResearchAgent::score_finding(
+            &"A".repeat(250)
+        );
+        assert_eq!(long_score, 20, "long text without structural signals gets length bonus only");
+
+        // Comment-like paths must NOT score as file:line
+        let comment_score = ResearchAgent::score_finding("//config.rs:10 is a comment");
+        assert!(comment_score < 80, "comment-like path should not score as file:line, got {comment_score}");
+
+        // URL ports must NOT score as file:line
+        let url_score = ResearchAgent::score_finding(
+            "Visit http://example.com:8080 for API details and more information about the endpoint"
+        );
+        assert!(url_score < 80, "URL:port should not score as file:line, got {url_score}");
+
+        // https URLs must NOT score as file:line
+        let https_score = ResearchAgent::score_finding(
+            "Documentation at https://docs.rs:443/crate/tokio provides comprehensive API reference"
+        );
+        assert!(https_score < 80, "HTTPS URL should not score as file:line, got {https_score}");
+
+        // Parenthesized file:line refs ARE valid (parens are formatting, ref is real)
+        let paren_score = ResearchAgent::score_finding(
+            "The bug is in (src/auth.rs:45) authentication module handler"
+        );
+        assert!(paren_score >= 80, "paren-wrapped file:line should still score, got {paren_score}");
     }
 }

@@ -10,40 +10,37 @@ use tiktoken_rs::{CoreBPE, cl100k_base, o200k_base, p50k_base};
 
 use crate::config::TokenEncoding;
 
-static CL100K: OnceLock<CoreBPE> = OnceLock::new();
-static O200K: OnceLock<CoreBPE> = OnceLock::new();
-static P50K: OnceLock<CoreBPE> = OnceLock::new();
+static CL100K: OnceLock<Option<CoreBPE>> = OnceLock::new();
+static O200K: OnceLock<Option<CoreBPE>> = OnceLock::new();
+static P50K: OnceLock<Option<CoreBPE>> = OnceLock::new();
 
-fn get_cl100k() -> &'static CoreBPE {
-    CL100K.get_or_init(|| cl100k_base().expect("Failed to load cl100k_base tokenizer"))
+fn get_cl100k() -> Option<&'static CoreBPE> {
+    CL100K.get_or_init(|| cl100k_base().ok()).as_ref()
 }
 
-fn get_o200k() -> &'static CoreBPE {
-    O200K.get_or_init(|| o200k_base().expect("Failed to load o200k_base tokenizer"))
+fn get_o200k() -> Option<&'static CoreBPE> {
+    O200K.get_or_init(|| o200k_base().ok()).as_ref()
 }
 
-fn get_p50k() -> &'static CoreBPE {
-    P50K.get_or_init(|| p50k_base().expect("Failed to load p50k_base tokenizer"))
+fn get_p50k() -> Option<&'static CoreBPE> {
+    P50K.get_or_init(|| p50k_base().ok()).as_ref()
 }
 
-/// Estimates token count using the specified encoding.
-///
-/// # Arguments
-/// * `text` - The text to tokenize
-/// * `encoding` - The encoding strategy to use
-/// * `heuristic_chars_per_token` - Chars per token for heuristic mode
-///
-/// # Returns
-/// Estimated token count
 pub fn estimate_tokens_with_encoding(
     text: &str,
     encoding: TokenEncoding,
     heuristic_chars_per_token: usize,
 ) -> usize {
     match encoding {
-        TokenEncoding::Cl100kBase => get_cl100k().encode_with_special_tokens(text).len(),
-        TokenEncoding::O200kBase => get_o200k().encode_with_special_tokens(text).len(),
-        TokenEncoding::P50kBase => get_p50k().encode_with_special_tokens(text).len(),
+        TokenEncoding::Cl100kBase => get_cl100k()
+            .map(|enc| enc.encode_with_special_tokens(text).len())
+            .unwrap_or_else(|| heuristic_estimate(text, heuristic_chars_per_token)),
+        TokenEncoding::O200kBase => get_o200k()
+            .map(|enc| enc.encode_with_special_tokens(text).len())
+            .unwrap_or_else(|| heuristic_estimate(text, heuristic_chars_per_token)),
+        TokenEncoding::P50kBase => get_p50k()
+            .map(|enc| enc.encode_with_special_tokens(text).len())
+            .unwrap_or_else(|| heuristic_estimate(text, heuristic_chars_per_token)),
         TokenEncoding::Heuristic => heuristic_estimate(text, heuristic_chars_per_token),
     }
 }

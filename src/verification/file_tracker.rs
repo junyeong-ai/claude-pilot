@@ -110,7 +110,7 @@ struct FileState {
 
 /// Represents changes between two filesystem snapshots.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct FileChanges {
+pub struct TrackedFileChanges {
     /// Files that were created (didn't exist before, exist now)
     pub created: Vec<PathBuf>,
     /// Files that were modified (existed before and after, but changed)
@@ -119,7 +119,7 @@ pub struct FileChanges {
     pub deleted: Vec<PathBuf>,
 }
 
-impl FileChanges {
+impl TrackedFileChanges {
     /// Returns true if no changes were detected.
     pub fn is_empty(&self) -> bool {
         self.created.is_empty() && self.modified.is_empty() && self.deleted.is_empty()
@@ -190,7 +190,7 @@ impl FileTracker {
     /// Computes the changes between the before and after snapshots.
     /// When parallel tasks run, only includes changes that occurred within this task's
     /// execution window (between capture_before and capture_after timestamps).
-    pub fn changes(&self) -> FileChanges {
+    pub fn changes(&self) -> TrackedFileChanges {
         let mut created = Vec::new();
         let mut modified = Vec::new();
         let mut deleted = Vec::new();
@@ -249,7 +249,7 @@ impl FileTracker {
         modified.sort();
         deleted.sort();
 
-        FileChanges {
+        TrackedFileChanges {
             created,
             modified,
             deleted,
@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn test_total_count() {
-        let changes = FileChanges {
+        let changes = TrackedFileChanges {
             created: vec![PathBuf::from("a.txt")],
             modified: vec![PathBuf::from("b.txt"), PathBuf::from("c.txt")],
             deleted: vec![PathBuf::from("d.txt")],

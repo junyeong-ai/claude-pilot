@@ -1,11 +1,13 @@
 //! Event verification utilities for testing.
 
-use claude_pilot::state::{DomainEvent, EventPayload, VoteDecision};
+use claude_pilot::agent::multi::identity::RoleType;
+use claude_pilot::domain::VoteDecision;
+use claude_pilot::state::{DomainEvent, EventPayload};
 
 #[derive(Debug)]
 pub enum EventPattern {
     AgentSpawned {
-        role: String,
+        role: RoleType,
     },
     ConsensusRoundStarted {
         round: usize,
@@ -20,11 +22,11 @@ pub enum EventPattern {
     ConsensusCompleted {
         rounds: usize,
     },
-    TaskAssigned {
-        agent: String,
+    TaskStarted {
+        task_id: String,
     },
     TaskCompleted {
-        success: bool,
+        task_id: String,
     },
     VerificationRound {
         round: usize,
@@ -53,11 +55,11 @@ impl EventPattern {
             EventPattern::ConsensusCompleted { rounds } => {
                 matches!(payload, EventPayload::ConsensusCompleted { rounds: r, .. } if *r as usize == *rounds)
             }
-            EventPattern::TaskAssigned { agent } => {
-                matches!(payload, EventPayload::AgentTaskAssigned { agent_id, .. } if agent_id == agent)
+            EventPattern::TaskStarted { task_id } => {
+                matches!(payload, EventPayload::TaskStarted { task_id: t, .. } if t == task_id)
             }
-            EventPattern::TaskCompleted { success } => {
-                matches!(payload, EventPayload::AgentTaskCompleted { success: s, .. } if s == success)
+            EventPattern::TaskCompleted { task_id } => {
+                matches!(payload, EventPayload::TaskCompleted { task_id: t, .. } if t == task_id)
             }
             EventPattern::VerificationRound { round } => {
                 matches!(payload, EventPayload::VerificationRound { round: r, .. } if *r as usize == *round)
@@ -109,9 +111,9 @@ impl EventVerifier {
 
     pub fn assert_agent_participated(&self, agent_id: &str) {
         let participated = self.has_event(|e| match e {
-            EventPayload::AgentTaskAssigned { agent_id: a, .. } => a == agent_id,
-            EventPayload::AgentTaskCompleted { agent_id: a, .. } => a == agent_id,
             EventPayload::AgentSpawned { agent_id: a, .. } => a == agent_id,
+            EventPayload::AgentMessageSent { from_agent, .. } => from_agent == agent_id,
+            EventPayload::AgentMessageReceived { to_agent, .. } => to_agent == agent_id,
             _ => false,
         });
 
@@ -158,7 +160,7 @@ impl EventVerifier {
 
     pub fn assert_escalation(
         &self,
-        expected_level: claude_pilot::agent::multi::escalation::EscalationLevel,
+        expected_level: claude_pilot::domain::EscalationLevel,
     ) {
         let escalated = self.has_event(|e| {
             matches!(
@@ -209,13 +211,12 @@ mod tests {
         let events = vec![
             make_event(EventPayload::AgentSpawned {
                 agent_id: "coder-0".into(),
-                role: "coder".into(),
+                role: RoleType::Coder,
                 persona: None,
             }),
-            make_event(EventPayload::AgentTaskAssigned {
-                agent_id: "coder-0".into(),
+            make_event(EventPayload::TaskStarted {
                 task_id: "task-1".into(),
-                role: "coder".into(),
+                description: "Implement auth".into(),
             }),
         ];
 
@@ -230,18 +231,16 @@ mod tests {
         let events = vec![
             make_event(EventPayload::AgentSpawned {
                 agent_id: "research-0".into(),
-                role: "research".into(),
+                role: RoleType::Research,
                 persona: None,
             }),
-            make_event(EventPayload::AgentTaskAssigned {
-                agent_id: "coder-0".into(),
+            make_event(EventPayload::TaskStarted {
                 task_id: "task-1".into(),
-                role: "coder".into(),
+                description: "Implement auth".into(),
             }),
-            make_event(EventPayload::AgentTaskCompleted {
-                agent_id: "coder-0".into(),
+            make_event(EventPayload::TaskCompleted {
                 task_id: "task-1".into(),
-                success: true,
+                files_modified: vec![],
                 duration_ms: 100,
             }),
         ];
@@ -250,21 +249,23 @@ mod tests {
 
         verifier.assert_sequence(&[
             EventPattern::AgentSpawned {
-                role: "research".into(),
+                role: RoleType::Research,
             },
-            EventPattern::TaskAssigned {
-                agent: "coder-0".into(),
+            EventPattern::TaskStarted {
+                task_id: "task-1".into(),
             },
-            EventPattern::TaskCompleted { success: true },
+            EventPattern::TaskCompleted {
+                task_id: "task-1".into(),
+            },
         ]);
     }
 
     #[test]
     fn test_assert_agent_participated() {
-        let events = vec![make_event(EventPayload::AgentTaskAssigned {
+        let events = vec![make_event(EventPayload::AgentSpawned {
             agent_id: "coder-0".into(),
-            task_id: "task-1".into(),
-            role: "coder".into(),
+            role: RoleType::Coder,
+            persona: None,
         })];
 
         let verifier = EventVerifier::new(events);

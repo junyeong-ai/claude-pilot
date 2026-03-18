@@ -6,6 +6,6 @@ mod sufficiency;
 pub use adapter::EnhancedEvidenceGatherer;
 pub use gathering::{EvidenceGatheringLoop, GatheringResult};
 pub use sufficiency::{
-    EvidenceRequirement, EvidenceSufficiencyChecker, RequirementCategory, RequirementPriority,
+    EvidenceRequirement, EvidenceSufficiencyChecker, RequirementCategory,
     SufficiencyContext,
 };

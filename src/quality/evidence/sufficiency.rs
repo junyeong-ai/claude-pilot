@@ -4,15 +4,16 @@ use std::path::Path;
 use glob::Pattern;
 use serde::{Deserialize, Serialize};
 
+use crate::agent::multi::TaskPriority;
 use crate::planning::Evidence;
-use crate::quality::EvidenceSufficiencyConfig;
+use crate::config::EvidenceSufficiencyConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceRequirement {
     pub id: String,
     pub description: String,
     pub category: RequirementCategory,
-    pub priority: RequirementPriority,
+    pub priority: TaskPriority,
     pub satisfied_by: Vec<EvidenceMatcher>,
 }
 
@@ -25,26 +26,6 @@ pub enum RequirementCategory {
     TestCoverage,
     Documentation,
     Conventions,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RequirementPriority {
-    Critical,
-    High,
-    Medium,
-    Low,
-}
-
-impl RequirementPriority {
-    pub fn weight(&self) -> f32 {
-        match self {
-            Self::Critical => 2.0,
-            Self::High => 1.5,
-            Self::Medium => 1.0,
-            Self::Low => 0.5,
-        }
-    }
 }
 
 /// Matchers for verifying evidence requirements.
@@ -82,6 +63,53 @@ pub enum EvidenceMatcher {
     KeywordInAnalysis {
         keyword: String,
     },
+}
+
+/// Pre-computed lowercase strings for efficient keyword matching.
+/// Avoids repeated .to_lowercase() when checking multiple KeywordInAnalysis matchers.
+struct EvidenceLowerCache {
+    paths: Vec<String>,
+    patterns: Vec<String>,
+    relevances: Vec<String>,
+    summaries: Vec<String>,
+    affected_areas: Vec<String>,
+}
+
+impl EvidenceLowerCache {
+    fn from_evidence(evidence: &Evidence) -> Self {
+        Self {
+            paths: evidence
+                .codebase_analysis
+                .relevant_files
+                .iter()
+                .map(|f| f.path.to_lowercase())
+                .collect(),
+            patterns: evidence
+                .codebase_analysis
+                .existing_patterns
+                .iter()
+                .map(|p| p.to_lowercase())
+                .collect(),
+            relevances: evidence
+                .codebase_analysis
+                .relevant_files
+                .iter()
+                .map(|f| f.relevance.to_lowercase())
+                .collect(),
+            summaries: evidence
+                .codebase_analysis
+                .relevant_files
+                .iter()
+                .map(|f| f.summary.to_lowercase())
+                .collect(),
+            affected_areas: evidence
+                .codebase_analysis
+                .affected_areas
+                .iter()
+                .map(|a| a.to_lowercase())
+                .collect(),
+        }
+    }
 }
 
 impl EvidenceMatcher {
@@ -150,6 +178,22 @@ impl EvidenceMatcher {
                     .iter()
                     .any(|a: &String| a.to_lowercase().contains(&lower_keyword))
             }
+        }
+    }
+
+    /// Matches using pre-computed lowercase cache for KeywordInAnalysis.
+    /// Falls back to regular `matches()` for all other matcher variants.
+    fn matches_with_cache(&self, evidence: &Evidence, cache: &EvidenceLowerCache) -> bool {
+        match self {
+            Self::KeywordInAnalysis { keyword } => {
+                let lower = keyword.to_lowercase();
+                cache.paths.iter().any(|p| p.contains(&lower))
+                    || cache.patterns.iter().any(|p| p.contains(&lower))
+                    || cache.relevances.iter().any(|r| r.contains(&lower))
+                    || cache.summaries.iter().any(|s| s.contains(&lower))
+                    || cache.affected_areas.iter().any(|a| a.contains(&lower))
+            }
+            _ => self.matches(evidence),
         }
     }
 }
@@ -418,7 +462,7 @@ pub struct MissingEvidence {
     pub requirement_id: String,
     pub description: String,
     pub category: RequirementCategory,
-    pub priority: RequirementPriority,
+    pub priority: TaskPriority,
     pub suggestion: Option<String>,
 }
 
@@ -524,18 +568,20 @@ impl EvidenceSufficiencyChecker {
 
         let mut satisfied = Vec::new();
         let mut missing = Vec::new();
-        let mut total_weight = 0.0;
-        let mut satisfied_weight = 0.0;
+        let mut total_weight: f32 = 0.0;
+        let mut satisfied_weight: f32 = 0.0;
         let mut category_stats: HashMap<RequirementCategory, (usize, usize)> = HashMap::new();
 
+        let cache = EvidenceLowerCache::from_evidence(evidence);
+
         for req in requirements {
-            let weight = req.priority.weight();
+            let weight = req.priority.weight() as f32;
             total_weight += weight;
 
             let is_satisfied = req
                 .satisfied_by
                 .iter()
-                .any(|matcher| matcher.matches(evidence));
+                .any(|matcher| matcher.matches_with_cache(evidence, &cache));
 
             let entry = category_stats.entry(req.category).or_insert((0, 0));
             entry.0 += 1;
@@ -576,7 +622,7 @@ impl EvidenceSufficiencyChecker {
 
         let has_critical_missing = missing
             .iter()
-            .any(|m| m.priority == RequirementPriority::Critical);
+            .any(|m| m.priority == TaskPriority::Critical);
 
         let sufficient =
             weighted_coverage >= self.config.min_coverage_ratio && !has_critical_missing;
@@ -621,7 +667,7 @@ impl EvidenceSufficiencyChecker {
         // Prioritize critical missing items
         let critical_missing: Vec<_> = missing
             .iter()
-            .filter(|m| m.priority == RequirementPriority::Critical)
+            .filter(|m| m.priority == TaskPriority::Critical)
             .collect();
 
         if !critical_missing.is_empty() {
@@ -681,14 +727,14 @@ impl EvidenceSufficiencyChecker {
                 id: "file_structure".to_string(),
                 description: "Relevant source files identified".to_string(),
                 category: RequirementCategory::FileStructure,
-                priority: RequirementPriority::High,
+                priority: TaskPriority::High,
                 satisfied_by: vec![EvidenceMatcher::SourceVerifiable],
             },
             EvidenceRequirement {
                 id: "confidence_level".to_string(),
                 description: "Evidence confidence above threshold".to_string(),
                 category: RequirementCategory::FileStructure,
-                priority: RequirementPriority::Medium,
+                priority: TaskPriority::Normal,
                 satisfied_by: vec![EvidenceMatcher::ConfidenceAbove {
                     threshold: self.config.gathering.convergence_threshold,
                 }],
@@ -807,7 +853,7 @@ mod tests {
                 id: "api_files".to_string(),
                 description: "API source files".to_string(),
                 category: RequirementCategory::FileStructure,
-                priority: RequirementPriority::High,
+                priority: TaskPriority::High,
                 satisfied_by: vec![EvidenceMatcher::FileExists {
                     pattern: "api".to_string(),
                 }],
@@ -816,7 +862,7 @@ mod tests {
                 id: "test_files".to_string(),
                 description: "Test files".to_string(),
                 category: RequirementCategory::TestCoverage,
-                priority: RequirementPriority::Medium,
+                priority: TaskPriority::Normal,
                 satisfied_by: vec![EvidenceMatcher::FileExists {
                     pattern: "test".to_string(),
                 }],
@@ -846,7 +892,7 @@ mod tests {
                 id: "existing".to_string(),
                 description: "Exists".to_string(),
                 category: RequirementCategory::FileStructure,
-                priority: RequirementPriority::Medium,
+                priority: TaskPriority::Normal,
                 satisfied_by: vec![EvidenceMatcher::FileExists {
                     pattern: "api".to_string(),
                 }],
@@ -855,7 +901,7 @@ mod tests {
                 id: "missing1".to_string(),
                 description: "Missing 1".to_string(),
                 category: RequirementCategory::Documentation,
-                priority: RequirementPriority::Medium,
+                priority: TaskPriority::Normal,
                 satisfied_by: vec![EvidenceMatcher::FileExists {
                     pattern: "nonexistent".to_string(),
                 }],
@@ -864,7 +910,7 @@ mod tests {
                 id: "missing2".to_string(),
                 description: "Missing 2".to_string(),
                 category: RequirementCategory::Documentation,
-                priority: RequirementPriority::Medium,
+                priority: TaskPriority::Normal,
                 satisfied_by: vec![EvidenceMatcher::FileExists {
                     pattern: "alsonothere".to_string(),
                 }],
@@ -888,7 +934,7 @@ mod tests {
                 id: "satisfied".to_string(),
                 description: "Satisfied".to_string(),
                 category: RequirementCategory::FileStructure,
-                priority: RequirementPriority::Medium,
+                priority: TaskPriority::Normal,
                 satisfied_by: vec![EvidenceMatcher::FileExists {
                     pattern: "api".to_string(),
                 }],
@@ -897,7 +943,7 @@ mod tests {
                 id: "critical_missing".to_string(),
                 description: "Critical missing".to_string(),
                 category: RequirementCategory::FileStructure,
-                priority: RequirementPriority::Critical,
+                priority: TaskPriority::Critical,
                 satisfied_by: vec![EvidenceMatcher::FileExists {
                     pattern: "required_critical".to_string(),
                 }],
@@ -940,5 +986,38 @@ mod tests {
             pattern: "routing".to_string(),
         };
         assert!(matcher.matches(&evidence));
+    }
+
+    #[test]
+    fn test_calculate_coverage_with_keyword_matcher() {
+        let config = EvidenceSufficiencyConfig::default();
+        let checker = EvidenceSufficiencyChecker::new(config);
+        let evidence = create_test_evidence();
+
+        let requirements = vec![
+            EvidenceRequirement {
+                id: "keyword_match".to_string(),
+                description: "Keyword found in analysis".to_string(),
+                category: RequirementCategory::Patterns,
+                priority: TaskPriority::Normal,
+                satisfied_by: vec![EvidenceMatcher::KeywordInAnalysis {
+                    keyword: "handler".to_string(),
+                }],
+            },
+            EvidenceRequirement {
+                id: "keyword_miss".to_string(),
+                description: "Keyword not in analysis".to_string(),
+                category: RequirementCategory::Patterns,
+                priority: TaskPriority::Normal,
+                satisfied_by: vec![EvidenceMatcher::KeywordInAnalysis {
+                    keyword: "nonexistent_xyz".to_string(),
+                }],
+            },
+        ];
+
+        let result = checker.calculate_coverage(&requirements, &evidence);
+        assert_eq!(result.satisfied_requirements, 1);
+        assert_eq!(result.missing.len(), 1);
+        assert_eq!(result.missing[0].requirement_id, "keyword_miss");
     }
 }

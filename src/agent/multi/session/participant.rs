@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::agent::multi::{AgentId, AgentRole, TierLevel};
 
 /// Agent status within a session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AgentStatus {
     /// Agent is registered but not yet active.
     Registered,
@@ -58,7 +59,7 @@ pub struct AgentCapabilities {
 
 impl AgentCapabilities {
     pub fn can_fulfill_role(&self, role: &AgentRole) -> bool {
-        self.roles.iter().any(|r| r.name() == role.name())
+        self.roles.iter().any(|r| r.as_str() == role.as_str())
     }
 
     pub fn has_domain(&self, domain: &str) -> bool {
@@ -180,7 +181,7 @@ impl From<&Participant> for ParticipantSummary {
                 .capabilities
                 .roles
                 .iter()
-                .map(|r| r.name().to_string())
+                .map(|r| r.as_str().to_string())
                 .collect(),
             domains: p.capabilities.domains.clone(),
             status: p.status,
@@ -230,7 +231,7 @@ impl ParticipantRegistry {
         // Index by roles
         for role in &participant.capabilities.roles {
             self.by_role
-                .entry(role.name().to_string())
+                .entry(role.as_str().to_string())
                 .or_default()
                 .push(id.clone());
         }
@@ -239,12 +240,12 @@ impl ParticipantRegistry {
     }
 
     /// Get a participant by ID.
-    pub fn get(&self, id: &AgentId) -> Option<&Participant> {
+    pub fn participant(&self, id: &AgentId) -> Option<&Participant> {
         self.participants.get(id)
     }
 
     /// Get a mutable reference to a participant.
-    pub fn get_mut(&mut self, id: &AgentId) -> Option<&mut Participant> {
+    pub fn participant_mut(&mut self, id: &AgentId) -> Option<&mut Participant> {
         self.participants.get_mut(id)
     }
 
@@ -260,7 +261,7 @@ impl ParticipantRegistry {
             }
             remove_from_index(&mut self.by_workspace, &participant.workspace, id);
             for role in &participant.capabilities.roles {
-                remove_from_index(&mut self.by_role, role.name(), id);
+                remove_from_index(&mut self.by_role, role.as_str(), id);
             }
 
             Some(participant)

@@ -1,5 +1,5 @@
 use super::types::{FailureAnalysis, FailureCategory, FailurePhase};
-use crate::error::{ExecutionError, PilotError};
+use crate::error::{ExecutionError, MissionError, PilotError, VerificationError};
 use crate::mission::Mission;
 
 pub struct FailureAnalyzer;
@@ -30,19 +30,15 @@ impl FailureAnalyzer {
 
     pub fn categorize(error: &PilotError) -> FailureCategory {
         match error {
-            PilotError::VerificationFailed { .. } => Self::categorize_verification_failure(error),
-            PilotError::BuildFailed(_) => FailureCategory::BuildFailure,
-            PilotError::TestFailed(_) => FailureCategory::TestFailure,
+            PilotError::Verification(VerificationError::Failed { .. }) => {
+                Self::categorize_verification_failure(error)
+            }
             PilotError::Git(_) => FailureCategory::GitError,
             PilotError::AgentExecution(msg) => Self::categorize_from_execution_error(msg),
-            PilotError::MaxRetriesExceeded(_) => FailureCategory::ResourceExhaustion,
             PilotError::MaxIterationsExceeded(_) => FailureCategory::ResourceExhaustion,
             PilotError::Planning(msg) => Self::categorize_planning_error(msg),
             PilotError::PlanValidation(_) => FailureCategory::InvalidOutput,
             PilotError::EvidenceGathering(_) => FailureCategory::AgentError,
-            PilotError::Worktree { .. } => FailureCategory::GitError,
-            PilotError::BranchExists(_) => FailureCategory::GitError,
-            PilotError::Session(_) => FailureCategory::AgentError,
             _ => FailureCategory::Unknown,
         }
     }
@@ -70,7 +66,7 @@ impl FailureAnalyzer {
     fn categorize_verification_failure(error: &PilotError) -> FailureCategory {
         use crate::error::FailedCheckType;
 
-        if let PilotError::VerificationFailed { checks, .. } = error {
+        if let PilotError::Verification(VerificationError::Failed { checks, .. }) = error {
             for check in checks {
                 // Prefer structured type information (type-safe)
                 if let Some(check_type) = check.check_type {
@@ -95,7 +91,9 @@ impl FailureAnalyzer {
 
     fn extract_task_id(error: &PilotError) -> Option<String> {
         match error {
-            PilotError::TaskNotFound { task_id, .. } => Some(task_id.clone()),
+            PilotError::Mission(MissionError::TaskNotFound { task_id, .. }) => {
+                Some(task_id.clone())
+            }
             _ => None,
         }
     }
@@ -222,7 +220,7 @@ mod tests {
             duration_secs: 60,
         };
         assert_eq!(timeout.max_retries(&config), 3);
-        assert!(timeout.suggested_delay(&config).as_secs() > 0);
+        assert!(timeout.suggested_delay(&config, 0).as_secs() > 0);
 
         let context_overflow = ExecutionError::ContextOverflow {
             message: "too long".to_string(),

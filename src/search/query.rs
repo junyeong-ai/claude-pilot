@@ -99,13 +99,13 @@ impl SearchQuery {
 }
 
 #[derive(Debug)]
-pub struct SearchResult {
+pub struct FixSearchResult {
     pub records: Vec<FixRecord>,
     pub total_scanned: usize,
     pub search_time_ms: u64,
 }
 
-impl SearchResult {
+impl FixSearchResult {
     pub fn empty() -> Self {
         Self {
             records: Vec::new(),
@@ -136,12 +136,12 @@ impl FixSearcher {
         }
     }
 
-    pub async fn search(&self, query: &SearchQuery) -> Result<SearchResult> {
+    pub async fn search(&self, query: &SearchQuery) -> Result<FixSearchResult> {
         let start = std::time::Instant::now();
 
         let fixes_path = self.index_dir.join("fixes.jsonl");
         if !fixes_path.exists() {
-            return Ok(SearchResult::empty());
+            return Ok(FixSearchResult::empty());
         }
 
         let pattern = query.build_rg_pattern();
@@ -181,7 +181,7 @@ impl FixSearcher {
             "Fix search completed"
         );
 
-        Ok(SearchResult {
+        Ok(FixSearchResult {
             records,
             total_scanned,
             search_time_ms,

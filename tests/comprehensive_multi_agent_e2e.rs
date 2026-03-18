@@ -15,6 +15,8 @@
 //! 4. Inter-agent messaging via AgentMessageBus
 //! 5. Convergent verification (2 consecutive clean passes)
 
+mod test_helpers;
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -23,10 +25,10 @@ use std::time::Duration;
 use claude_pilot::agent::TaskAgent;
 use claude_pilot::agent::multi::messaging::AgentMessageBus;
 use claude_pilot::agent::multi::{
-    AgentPoolBuilder, AgentRole, AgentTask, CoderAgent, Coordinator, ModuleAgent, PlanningAgent,
-    ResearchAgent, ReviewerAgent, SpecializedAgent, TaskContext, TaskPriority, VerifierAgent,
+    AgentPoolBuilder, AgentRole, AgentTask, CoderAgent, Coordinator, ModuleAgent, ResearchAgent,
+    SpecializedAgent, TaskContext, TaskPriority, VerifierAgent,
 };
-use claude_pilot::config::{AgentConfig, MultiAgentConfig};
+use claude_pilot::config::MultiAgentConfig;
 use claude_pilot::state::EventStore;
 use modmap::{Module, ModuleDependency, ModuleMetrics};
 use tempfile::TempDir;
@@ -257,22 +259,6 @@ fn create_test_modules() -> Vec<Arc<Module>> {
     ]
 }
 
-/// Create TaskAgent with real LLM configuration.
-fn create_task_agent() -> Arc<TaskAgent> {
-    let config = AgentConfig::default();
-    Arc::new(TaskAgent::new(config))
-}
-
-/// Create all core agents.
-fn create_core_agents(task_agent: Arc<TaskAgent>) -> Vec<Arc<dyn SpecializedAgent>> {
-    vec![
-        ResearchAgent::with_id("research-0", Arc::clone(&task_agent)),
-        PlanningAgent::with_id("planning-0", Arc::clone(&task_agent)),
-        CoderAgent::with_id("coder-0", Arc::clone(&task_agent)),
-        VerifierAgent::with_id("verifier-0", Arc::clone(&task_agent)),
-        ReviewerAgent::with_id("reviewer-0", Arc::clone(&task_agent)),
-    ]
-}
 
 /// Create module agents for each module.
 fn create_module_agents(
@@ -297,11 +283,11 @@ async fn setup_comprehensive_coordinator(
     event_store: Arc<EventStore>,
     dynamic_mode: bool,
 ) -> claude_pilot::error::Result<Coordinator> {
-    let task_agent = create_task_agent();
+    let task_agent = test_helpers::create_task_agent();
     let modules = create_test_modules();
 
     // Create all agents: core + module agents
-    let mut agents = create_core_agents(Arc::clone(&task_agent));
+    let mut agents = test_helpers::create_core_agents(Arc::clone(&task_agent));
     agents.extend(create_module_agents(Arc::clone(&task_agent), &modules));
 
     let mut config = MultiAgentConfig::default();
@@ -340,7 +326,7 @@ async fn test_individual_agent_execution() {
     let project_dir = temp_dir.path();
     create_realistic_project(project_dir);
 
-    let task_agent = create_task_agent();
+    let task_agent = test_helpers::create_task_agent();
 
     // Test ResearchAgent
     println!("--- Testing ResearchAgent ---");
@@ -354,10 +340,11 @@ async fn test_individual_agent_execution() {
             key_findings: vec![],
             blockers: vec![],
             related_files: vec!["src/auth/mod.rs".into()],
-            composed_prompt: None,
+            manifest_context: None,
         },
         priority: TaskPriority::Normal,
         role: Some(AgentRole::core_research()),
+
     };
 
     let start = std::time::Instant::now();
@@ -366,12 +353,12 @@ async fn test_individual_agent_execution() {
 
     match result {
         Ok(r) => {
-            println!("  Success: {}", r.success);
+            println!("  Success: {}", r.is_success());
             println!(
                 "  Output preview: {}...",
                 r.output.chars().take(200).collect::<String>()
             );
-            assert!(r.success, "Research should succeed");
+            assert!(r.is_success(), "Research should succeed");
         }
         Err(e) => println!("  Error: {}", e),
     }
@@ -390,10 +377,11 @@ async fn test_individual_agent_execution() {
             key_findings: vec![],
             blockers: vec![],
             related_files: vec!["src/auth/mod.rs".into()],
-            composed_prompt: None,
+            manifest_context: None,
         },
         priority: TaskPriority::Normal,
         role: Some(AgentRole::core_coder()),
+
     };
 
     let start = std::time::Instant::now();
@@ -402,7 +390,7 @@ async fn test_individual_agent_execution() {
 
     match result {
         Ok(r) => {
-            println!("  Success: {}", r.success);
+            println!("  Success: {}", r.is_success());
 
             // Verify the code change
             let auth_content =
@@ -425,10 +413,11 @@ async fn test_individual_agent_execution() {
             key_findings: vec![],
             blockers: vec![],
             related_files: vec![],
-            composed_prompt: None,
+            manifest_context: None,
         },
         priority: TaskPriority::High,
         role: Some(AgentRole::core_verifier()),
+
     };
 
     let start = std::time::Instant::now();
@@ -437,7 +426,7 @@ async fn test_individual_agent_execution() {
 
     match result {
         Ok(r) => {
-            println!("  Success: {}", r.success);
+            println!("  Success: {}", r.is_success());
             println!("  Findings: {:?}", r.findings);
         }
         Err(e) => println!("  Error: {}", e),
@@ -460,7 +449,7 @@ async fn test_module_agent_scope_enforcement() {
     let project_dir = temp_dir.path();
     create_realistic_project(project_dir);
 
-    let task_agent = create_task_agent();
+    let task_agent = test_helpers::create_task_agent();
     let modules = create_test_modules();
 
     // Get auth module agent
@@ -478,10 +467,11 @@ async fn test_module_agent_scope_enforcement() {
             key_findings: vec![],
             blockers: vec![],
             related_files: vec!["src/auth/mod.rs".into()],
-            composed_prompt: None,
+            manifest_context: None,
         },
         priority: TaskPriority::Normal,
         role: Some(AgentRole::module("auth")),
+
     };
 
     let start = std::time::Instant::now();
@@ -490,7 +480,7 @@ async fn test_module_agent_scope_enforcement() {
 
     match result {
         Ok(r) => {
-            println!("  Success: {}", r.success);
+            println!("  Success: {}", r.is_success());
             println!("  Findings: {:?}", r.findings);
 
             // Module agent should succeed and not produce scope warnings
@@ -534,10 +524,7 @@ async fn test_sequential_pipeline_execution() {
     create_realistic_project(project_dir);
 
     // Setup event store
-    let events_dir = project_dir.join(".pilot/events");
-    std::fs::create_dir_all(&events_dir).unwrap();
-    let db_path = events_dir.join("events.db");
-    let event_store = Arc::new(EventStore::new(&db_path).unwrap());
+    let event_store = test_helpers::setup_event_store(project_dir);
 
     // Create coordinator in sequential mode
     let coordinator = setup_comprehensive_coordinator(project_dir, Arc::clone(&event_store), false)
@@ -575,7 +562,7 @@ async fn test_sequential_pipeline_execution() {
             for (i, result) in mission_result.results.iter().enumerate() {
                 println!("\n--- Phase {} ---", i + 1);
                 println!("Task ID: {}", result.task_id);
-                println!("Success: {}", result.success);
+                println!("Success: {}", result.is_success());
                 if !result.findings.is_empty() {
                     println!("Findings: {:?}", result.findings);
                 }
@@ -630,10 +617,7 @@ async fn test_message_bus_communication() {
     let project_dir = temp_dir.path();
     create_realistic_project(project_dir);
 
-    let events_dir = project_dir.join(".pilot/events");
-    std::fs::create_dir_all(&events_dir).unwrap();
-    let db_path = events_dir.join("events.db");
-    let event_store = Arc::new(EventStore::new(&db_path).unwrap());
+    let event_store = test_helpers::setup_event_store(project_dir);
 
     let message_bus =
         Arc::new(AgentMessageBus::new(256).with_event_store(Arc::clone(&event_store)));
@@ -656,10 +640,11 @@ async fn test_message_bus_communication() {
             key_findings: vec![],
             blockers: vec![],
             related_files: vec![],
-            composed_prompt: None,
+            manifest_context: None,
         },
         priority: TaskPriority::Normal,
         role: Some(AgentRole::core_research()),
+
     };
 
     let task2 = AgentTask {
@@ -671,10 +656,11 @@ async fn test_message_bus_communication() {
             key_findings: vec![],
             blockers: vec![],
             related_files: vec![],
-            composed_prompt: None,
+            manifest_context: None,
         },
         priority: TaskPriority::Normal,
         role: Some(AgentRole::core_coder()),
+
     };
 
     // Send messages
@@ -732,10 +718,7 @@ async fn test_full_mission_with_module_agents() {
     let project_dir = temp_dir.path();
     create_realistic_project(project_dir);
 
-    let events_dir = project_dir.join(".pilot/events");
-    std::fs::create_dir_all(&events_dir).unwrap();
-    let db_path = events_dir.join("events.db");
-    let event_store = Arc::new(EventStore::new(&db_path).unwrap());
+    let event_store = test_helpers::setup_event_store(project_dir);
 
     let coordinator = setup_comprehensive_coordinator(project_dir, Arc::clone(&event_store), false)
         .await
@@ -774,7 +757,7 @@ async fn test_full_mission_with_module_agents() {
             println!("\n=== PHASE RESULTS ===");
             for (i, result) in mission_result.results.iter().enumerate() {
                 println!("\nPhase {}: Task '{}'", i + 1, result.task_id);
-                println!("  Success: {}", result.success);
+                println!("  Success: {}", result.is_success());
                 println!("  Output length: {} chars", result.output.len());
                 if !result.artifacts.is_empty() {
                     println!("  Artifacts: {:?}", result.artifacts.len());
@@ -840,12 +823,12 @@ async fn test_full_mission_with_module_agents() {
     println!("\n✓ Full mission test complete");
 }
 
-/// Test 6: Health Monitoring and Metrics
+/// Test 6: Health Monitoring and Metrics via Coordinator
 ///
-/// Tests the health monitoring system during execution.
+/// Tests the health monitoring system during coordinator-driven mission execution.
 #[tokio::test]
 #[ignore = "Makes real API calls via Claude Code OAuth"]
-async fn test_health_monitoring() {
+async fn test_coordinator_health_monitoring() {
     println!("\n{}", "=".repeat(60));
     println!("TEST: Health Monitoring and Metrics");
     println!("{}\n", "=".repeat(60));
@@ -854,10 +837,7 @@ async fn test_health_monitoring() {
     let project_dir = temp_dir.path();
     create_realistic_project(project_dir);
 
-    let events_dir = project_dir.join(".pilot/events");
-    std::fs::create_dir_all(&events_dir).unwrap();
-    let db_path = events_dir.join("events.db");
-    let event_store = Arc::new(EventStore::new(&db_path).unwrap());
+    let event_store = test_helpers::setup_event_store(project_dir);
 
     let coordinator = setup_comprehensive_coordinator(project_dir, Arc::clone(&event_store), false)
         .await
@@ -946,10 +926,7 @@ pub fn process(items: Vec<String>) -> String {
     )
     .unwrap();
 
-    let events_dir = project_dir.join(".pilot/events");
-    std::fs::create_dir_all(&events_dir).unwrap();
-    let db_path = events_dir.join("events.db");
-    let event_store = Arc::new(EventStore::new(&db_path).unwrap());
+    let event_store = test_helpers::setup_event_store(project_dir);
 
     let coordinator = setup_comprehensive_coordinator(project_dir, Arc::clone(&event_store), false)
         .await
@@ -1046,7 +1023,7 @@ async fn run_all_comprehensive_tests() {
     println!("3. test_sequential_pipeline_execution");
     println!("4. test_message_bus_communication");
     println!("5. test_full_mission_with_module_agents");
-    println!("6. test_health_monitoring");
+    println!("6. test_coordinator_health_monitoring");
     println!("7. test_convergent_verification_loop");
 
     println!("\nRun individual test with:");

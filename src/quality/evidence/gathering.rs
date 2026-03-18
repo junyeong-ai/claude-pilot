@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::{AgentConfig, ModelAgentType};
 use crate::error::{ExecutionError, PilotError, Result};
-use crate::quality::EvidenceGatheringConfig;
+use crate::config::EvidenceGatheringConfig;
 use crate::quality::evidence::SufficiencyContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,9 +234,9 @@ impl EvidenceGatheringLoop {
     async fn gather_inner(&self, mission: &str, task: Option<&str>) -> Result<GatheringResult> {
         let mut accumulated = SearchResults::default();
         let mut refinement_attempts = 0;
-        const MAX_REFINEMENT_ATTEMPTS: u32 = 2;
-        const PLATEAU_THRESHOLD: f32 = 0.02; // 2% improvement threshold
-        const PLATEAU_WINDOW: usize = 3; // Check last 3 iterations
+        let max_refinement_attempts = self.config.max_refinement_attempts;
+        let plateau_threshold = self.config.plateau_threshold;
+        let plateau_window = self.config.plateau_window;
 
         // Track coverage history for plateau detection
         let mut coverage_history: Vec<f32> = Vec::new();
@@ -270,7 +270,7 @@ impl EvidenceGatheringLoop {
 
             // Semantic stopping: detect coverage plateau, then consult LLM
             if let Some(reason) =
-                self.detect_plateau(&coverage_history, PLATEAU_THRESHOLD, PLATEAU_WINDOW)
+                self.detect_plateau(&coverage_history, plateau_threshold, plateau_window)
             {
                 info!(
                     iteration,
@@ -318,7 +318,7 @@ impl EvidenceGatheringLoop {
             // Quality-based retry: if search limits hit and coverage is low, try refined strategy
             let needs_refinement = accumulated.hit_search_limit
                 && evaluation.coverage_score < self.config.min_coverage_threshold
-                && refinement_attempts < MAX_REFINEMENT_ATTEMPTS;
+                && refinement_attempts < max_refinement_attempts;
 
             if needs_refinement {
                 refinement_attempts += 1;

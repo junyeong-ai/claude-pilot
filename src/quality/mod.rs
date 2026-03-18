@@ -7,17 +7,17 @@ mod types;
 
 pub use config::{
     CoherenceConfig, CoherenceThresholds, ConfidenceScores, EvidenceGatheringConfig,
-    EvidenceSourcesConfig, EvidenceSufficiencyConfig, EvidenceVerificationConfig,
+    EvidenceSufficiencyConfig,
 };
 
 pub use types::{
     AggregatedCoherence, CodeLocation, CoherenceCheckType, CoherenceIssue, CoherenceResult,
-    FileChange, FileChangeType, Severity,
+    QualityFileChange, QualityFileChangeType,
 };
 
 pub use coherence::{CoherenceChecker, CoherenceReport, CoherenceTaskResult};
 
 pub use evidence::{
     EnhancedEvidenceGatherer, EvidenceGatheringLoop, EvidenceRequirement,
-    EvidenceSufficiencyChecker, GatheringResult, RequirementCategory, RequirementPriority,
+    EvidenceSufficiencyChecker, GatheringResult, RequirementCategory,
 };

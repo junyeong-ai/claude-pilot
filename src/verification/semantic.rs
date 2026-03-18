@@ -4,7 +4,8 @@ use std::path::Path;
 
 use tracing::{debug, info};
 
-use super::issue::{Issue, IssueCategory, IssueSeverity};
+use super::issue::{Issue, IssueCategory};
+use crate::domain::Severity;
 use crate::error::Result;
 use crate::symora::{Diagnostic, DiagnosticSeverity, SymoraClient};
 
@@ -31,14 +32,14 @@ impl SemanticValidation {
     pub fn error_count(&self) -> usize {
         self.diagnostic_issues
             .iter()
-            .filter(|i| i.severity == IssueSeverity::Error)
+            .filter(|i| i.severity == Severity::Error)
             .count()
     }
 
     pub fn warning_count(&self) -> usize {
         self.diagnostic_issues
             .iter()
-            .filter(|i| i.severity == IssueSeverity::Warning)
+            .filter(|i| i.severity == Severity::Warning)
             .count()
     }
 
@@ -63,9 +64,9 @@ impl SemanticValidation {
 
         for issue in &self.diagnostic_issues {
             let severity = match issue.severity {
-                IssueSeverity::Error | IssueSeverity::Critical => "ERROR",
-                IssueSeverity::Warning => "WARN",
-                IssueSeverity::Info => "INFO",
+                Severity::Error | Severity::Critical => "ERROR",
+                Severity::Warning => "WARN",
+                Severity::Info => "INFO",
             };
             context.push_str(&format!("- [{}] {}\n", severity, issue.message));
             if let Some(ref file) = issue.file {
@@ -91,10 +92,6 @@ impl SemanticValidator {
         Self {
             symora: SymoraClient::new(working_dir, timeout_secs),
         }
-    }
-
-    pub async fn is_available(&self) -> bool {
-        self.symora.is_available().await
     }
 
     pub async fn validate_files(&self, files: &[String]) -> SemanticValidation {
@@ -161,8 +158,8 @@ impl SemanticValidator {
 fn convert_diagnostic(diagnostic: &Diagnostic, file: &str) -> Option<Issue> {
     // Skip hints and info-level diagnostics (too noisy for verification)
     let severity = match diagnostic.severity {
-        DiagnosticSeverity::Error => IssueSeverity::Error,
-        DiagnosticSeverity::Warning => IssueSeverity::Warning,
+        DiagnosticSeverity::Error => Severity::Error,
+        DiagnosticSeverity::Warning => Severity::Warning,
         DiagnosticSeverity::Information | DiagnosticSeverity::Hint => return None,
     };
 

@@ -257,16 +257,6 @@ impl NotificationFilter {
         self
     }
 
-    pub fn related_to_tasks(mut self, tasks: Vec<String>) -> Self {
-        self.related_tasks = Some(tasks);
-        self
-    }
-
-    pub fn related_to_files(mut self, files: Vec<String>) -> Self {
-        self.related_files = Some(files);
-        self
-    }
-
     pub fn limit(mut self, n: usize) -> Self {
         self.limit = Some(n);
         self
@@ -446,23 +436,13 @@ impl NotificationLog {
         )
     }
 
-    /// Get unacknowledged notifications for an agent.
+    #[cfg(test)]
     pub fn unacknowledged_for_agent(&self, agent_id: &str) -> Vec<&Notification> {
         self.query(
             &NotificationFilter::new()
                 .for_agent(agent_id)
                 .exclude_acknowledged(),
         )
-    }
-
-    /// Get notifications related to specific tasks.
-    pub fn for_tasks(&self, task_ids: &[String]) -> Vec<&Notification> {
-        self.query(&NotificationFilter::new().related_to_tasks(task_ids.to_vec()))
-    }
-
-    /// Get notifications related to specific files.
-    pub fn for_files(&self, files: &[String]) -> Vec<&Notification> {
-        self.query(&NotificationFilter::new().related_to_files(files.to_vec()))
     }
 
     /// Acknowledge a notification for an agent.
@@ -481,14 +461,9 @@ impl NotificationLog {
         self.next_id.saturating_sub(1)
     }
 
-    /// Get notification count.
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.notifications.len()
-    }
-
-    /// Check if empty.
-    pub fn is_empty(&self) -> bool {
-        self.notifications.is_empty()
     }
 
     /// Cleanup old entries.
@@ -510,7 +485,7 @@ impl NotificationLog {
     }
 
     /// Format notifications for context injection.
-    pub fn format_for_context(&self, notifications: &[&Notification]) -> String {
+    pub fn format_for_llm(&self, notifications: &[&Notification]) -> String {
         if notifications.is_empty() {
             return String::new();
         }
@@ -720,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_for_context() {
+    fn test_format_for_llm() {
         let mut log = NotificationLog::new(100, Duration::from_secs(3600));
 
         log.add(
@@ -734,7 +709,7 @@ mod tests {
         );
 
         let notifications = log.query(&NotificationFilter::new());
-        let formatted = log.format_for_context(&notifications);
+        let formatted = log.format_for_llm(&notifications);
 
         assert!(formatted.contains("## Recent Notifications"));
         assert!(formatted.contains("task-1"));

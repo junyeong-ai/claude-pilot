@@ -6,13 +6,17 @@ use chrono::{DateTime, Utc};
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 use serde::{Deserialize, Serialize};
 
-use crate::agent::multi::consensus::ConflictSeverity;
-use crate::agent::multi::escalation::EscalationLevel;
-pub use crate::agent::multi::shared::{RoundOutcome, VoteDecision};
+use crate::agent::multi::consensus::conflict::ResolutionStrategy;
+use crate::agent::multi::identity::RoleType;
+use crate::agent::multi::messaging::AgentMessageType;
+use crate::agent::multi::session::{AgentStatus, SessionPhase};
+use crate::agent::multi::shared::{ConsensusOutcome, TierLevel};
+use crate::domain::{
+    ConsensusStrategyKind, EscalationLevel, RoundOutcome, Severity, VoteDecision,
+};
 use crate::mission::TaskStatus;
-use crate::planning::ComplexityTier;
 use crate::state::MissionState;
-use crate::verification::{FixStrategy, IssueCategory, IssueSeverity};
+use crate::verification::{FixStrategy, IssueCategory};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -237,6 +241,17 @@ impl DomainEvent {
         )
     }
 
+    pub fn task_deferred(mission_id: &str, task_id: &str, reason: &str, deferred_by: &str) -> Self {
+        Self::new(
+            mission_id,
+            EventPayload::TaskDeferred {
+                task_id: task_id.into(),
+                reason: reason.into(),
+                deferred_by: deferred_by.into(),
+            },
+        )
+    }
+
     pub fn task_failed(mission_id: &str, task_id: &str, error: &str, retry_count: u32) -> Self {
         Self::new(
             mission_id,
@@ -349,7 +364,7 @@ impl DomainEvent {
         round: u32,
         conflict_id: &str,
         agents: Vec<String>,
-        severity: ConflictSeverity,
+        severity: Severity,
     ) -> Self {
         Self::new(
             mission_id,
@@ -365,13 +380,13 @@ impl DomainEvent {
     pub fn consensus_conflict_resolved(
         mission_id: &str,
         conflict_id: &str,
-        strategy: &str,
+        strategy: ResolutionStrategy,
     ) -> Self {
         Self::new(
             mission_id,
             EventPayload::ConsensusConflictResolved {
                 conflict_id: conflict_id.into(),
-                resolution_strategy: strategy.into(),
+                resolution_strategy: strategy,
             },
         )
     }
@@ -406,21 +421,21 @@ impl DomainEvent {
         mission_id: &str,
         rounds: u32,
         respondent_count: usize,
-        outcome: &str,
+        outcome: ConsensusOutcome,
     ) -> Self {
         Self::new(
             mission_id,
             EventPayload::ConsensusCompleted {
                 rounds,
                 respondent_count,
-                outcome: outcome.into(),
+                outcome,
             },
         )
     }
 
     pub fn multi_agent_phase_completed(
         mission_id: &str,
-        phase: &str,
+        phase: SessionPhase,
         task_count: usize,
         success_count: usize,
         duration_ms: u64,
@@ -428,7 +443,7 @@ impl DomainEvent {
         Self::new(
             mission_id,
             EventPayload::MultiAgentPhaseCompleted {
-                phase: phase.into(),
+                phase,
                 task_count,
                 success_count,
                 duration_ms,
@@ -451,14 +466,14 @@ impl DomainEvent {
     pub fn agent_spawned(
         mission_id: &str,
         agent_id: &str,
-        role: &str,
+        role: RoleType,
         persona: Option<&str>,
     ) -> Self {
         Self::new(
             mission_id,
             EventPayload::AgentSpawned {
                 agent_id: agent_id.into(),
-                role: role.into(),
+                role,
                 persona: persona.map(String::from),
             },
         )
@@ -483,61 +498,31 @@ impl DomainEvent {
     pub fn agent_status_changed(
         mission_id: &str,
         agent_id: &str,
-        previous_status: &str,
-        new_status: &str,
+        previous_status: AgentStatus,
+        new_status: AgentStatus,
     ) -> Self {
         Self::new(
             mission_id,
             EventPayload::AgentStatusChanged {
                 agent_id: agent_id.into(),
-                previous_status: previous_status.into(),
-                new_status: new_status.into(),
+                previous_status,
+                new_status,
             },
         )
     }
 
-    // Context Injection Events
-
-    pub fn rules_injected(
+    pub fn manifest_context_injected(
         mission_id: &str,
         agent_id: &str,
         task_id: &str,
-        rule_count: usize,
-        rule_categories: Vec<String>,
+        module_ids: Vec<String>,
     ) -> Self {
         Self::new(
             mission_id,
-            EventPayload::RulesInjected {
+            EventPayload::ManifestContextInjected {
                 agent_id: agent_id.into(),
                 task_id: task_id.into(),
-                rule_count,
-                rule_categories,
-            },
-        )
-    }
-
-    pub fn skill_activated(
-        mission_id: &str,
-        agent_id: &str,
-        task_id: &str,
-        skill_type: &str,
-    ) -> Self {
-        Self::new(
-            mission_id,
-            EventPayload::SkillActivated {
-                agent_id: agent_id.into(),
-                task_id: task_id.into(),
-                skill_type: skill_type.into(),
-            },
-        )
-    }
-
-    pub fn persona_loaded(mission_id: &str, agent_id: &str, persona_name: &str) -> Self {
-        Self::new(
-            mission_id,
-            EventPayload::PersonaLoaded {
-                agent_id: agent_id.into(),
-                persona_name: persona_name.into(),
+                module_ids,
             },
         )
     }
@@ -567,7 +552,7 @@ impl DomainEvent {
         round: u32,
         agent_id: &str,
         module: &str,
-        decision: &str,
+        decision: VoteDecision,
         confidence: f64,
     ) -> Self {
         Self::new(
@@ -576,7 +561,7 @@ impl DomainEvent {
                 round,
                 agent_id: agent_id.into(),
                 module: module.into(),
-                decision: decision.into(),
+                decision,
                 confidence,
             },
         )
@@ -594,43 +579,10 @@ pub enum EventPayload {
         to: MissionState,
         reason: String,
     },
-    MissionEscalated {
-        reason: String,
-        context: Option<String>,
-    },
-    MissionResumed {
-        human_response: Option<String>,
-    },
-
-    EvidenceGatheringStarted {
-        strategy: String,
-    },
-    EvidenceFileDiscovered {
-        file_path: String,
-        relevance_score: f32,
-    },
-    EvidenceGatheringCompleted {
-        file_count: usize,
-        pattern_count: usize,
-        quality_score: f32,
-        confidence: f32,
-    },
-
-    ComplexityAssessed {
-        tier: ComplexityTier,
-        score: f32,
-        confidence: f32,
-        file_count: usize,
-    },
     PlanGenerated {
         task_count: usize,
         phase_count: usize,
     },
-    PlanValidated {
-        passed: bool,
-        issues: Vec<String>,
-    },
-
     TaskStarted {
         task_id: String,
         description: String,
@@ -649,6 +601,11 @@ pub enum EventPayload {
         task_id: String,
         reason: String,
     },
+    TaskDeferred {
+        task_id: String,
+        reason: String,
+        deferred_by: String,
+    },
     TaskStatusChanged {
         task_id: String,
         from: TaskStatus,
@@ -664,7 +621,7 @@ pub enum EventPayload {
     IssueDetected {
         issue_id: String,
         category: IssueCategory,
-        severity: IssueSeverity,
+        severity: Severity,
         message: String,
         file: Option<String>,
         line: Option<usize>,
@@ -682,10 +639,6 @@ pub enum EventPayload {
         issue_id: String,
         strategy: FixStrategy,
         success: bool,
-    },
-    FixStrategiesExhausted {
-        issue_id: String,
-        attempts: u32,
     },
 
     PatternLearned {
@@ -709,22 +662,6 @@ pub enum EventPayload {
         checkpoint_id: String,
         task_count: usize,
     },
-    // Note: Session recovery events (SessionRecoveryStarted/Completed/Failed)
-    // are used for hierarchical consensus recovery. The old RecoveryStarted
-    // variant was removed as it was unused.
-    DriftDetected {
-        task_id: String,
-        file_path: String,
-        drift_type: String,
-        severity: String,
-    },
-    ContextSwitch {
-        task_id: String,
-        from_module: Option<String>,
-        to_module: Option<String>,
-        switch_count: u32,
-    },
-
     ConsensusRoundStarted {
         round: u32,
         proposal_hash: String,
@@ -740,20 +677,16 @@ pub enum EventPayload {
         round: u32,
         conflict_id: String,
         agents: Vec<String>,
-        severity: ConflictSeverity,
+        severity: Severity,
     },
     ConsensusConflictResolved {
         conflict_id: String,
-        resolution_strategy: String,
+        resolution_strategy: ResolutionStrategy,
     },
     ConsensusRoundCompleted {
         round: u32,
         outcome: RoundOutcome,
         approval_ratio: f64,
-    },
-    ConsensusOscillationDetected {
-        proposal_hash: String,
-        cycle_length: usize,
     },
     ConsensusEscalated {
         level: EscalationLevel,
@@ -762,10 +695,10 @@ pub enum EventPayload {
     ConsensusCompleted {
         rounds: u32,
         respondent_count: usize,
-        outcome: String,
+        outcome: ConsensusOutcome,
     },
     MultiAgentPhaseCompleted {
-        phase: String,
+        phase: SessionPhase,
         task_count: usize,
         success_count: usize,
         duration_ms: u64,
@@ -774,31 +707,19 @@ pub enum EventPayload {
     AgentMessageSent {
         from_agent: String,
         to_agent: String,
-        message_type: String,
+        message_type: AgentMessageType,
         correlation_id: String,
     },
     AgentMessageReceived {
         from_agent: String,
         to_agent: String,
-        message_type: String,
+        message_type: AgentMessageType,
         correlation_id: String,
     },
-    AgentTaskAssigned {
-        agent_id: String,
-        task_id: String,
-        role: String,
-    },
-    AgentTaskCompleted {
-        agent_id: String,
-        task_id: String,
-        success: bool,
-        duration_ms: u64,
-    },
-
     // Agent Lifecycle Events
     AgentSpawned {
         agent_id: String,
-        role: String,
+        role: RoleType,
         #[serde(skip_serializing_if = "Option::is_none")]
         persona: Option<String>,
     },
@@ -809,25 +730,15 @@ pub enum EventPayload {
     },
     AgentStatusChanged {
         agent_id: String,
-        previous_status: String,
-        new_status: String,
+        previous_status: AgentStatus,
+        new_status: AgentStatus,
     },
 
     // Context Injection Events
-    RulesInjected {
+    ManifestContextInjected {
         agent_id: String,
         task_id: String,
-        rule_count: usize,
-        rule_categories: Vec<String>,
-    },
-    SkillActivated {
-        agent_id: String,
-        task_id: String,
-        skill_type: String,
-    },
-    PersonaLoaded {
-        agent_id: String,
-        persona_name: String,
+        module_ids: Vec<String>,
     },
 
     // Enhanced Consensus Events
@@ -841,7 +752,7 @@ pub enum EventPayload {
         round: u32,
         agent_id: String,
         module: String,
-        decision: String,
+        decision: VoteDecision,
         confidence: f64,
     },
 
@@ -849,19 +760,19 @@ pub enum EventPayload {
     HierarchicalConsensusStarted {
         session_id: String,
         mission_id: String,
-        strategy: String, // "direct", "flat", "hierarchical"
+        strategy: ConsensusStrategyKind,
         participant_count: usize,
         tier_count: usize,
     },
     TierConsensusStarted {
         session_id: String,
-        tier_level: String, // "module", "group", "domain", "workspace"
+        tier_level: TierLevel,
         unit_id: String,
         participants: Vec<String>,
     },
     TierConsensusCompleted {
         session_id: String,
-        tier_level: String,
+        tier_level: TierLevel,
         unit_id: String,
         synthesis_hash: String,
         respondent_count: usize,
@@ -871,7 +782,7 @@ pub enum EventPayload {
         session_id: String,
         checkpoint_id: String,
         round: usize,
-        tier_level: String,
+        tier_level: Option<TierLevel>,
         state_hash: String,
     },
     SessionRecoveryStarted {
@@ -882,7 +793,7 @@ pub enum EventPayload {
     SessionRecoveryCompleted {
         session_id: String,
         checkpoint_id: String,
-        outcome: String,
+        outcome: ConsensusOutcome,
         recovered_rounds: usize,
         duration_ms: u64,
     },
@@ -893,7 +804,7 @@ pub enum EventPayload {
     },
     HierarchicalConsensusCompleted {
         session_id: String,
-        outcome: String, // "converged", "partial", "escalated", "timeout"
+        outcome: ConsensusOutcome,
         total_tiers: usize,
         total_rounds: usize,
         duration_ms: u64,
@@ -905,50 +816,36 @@ impl EventPayload {
         match self {
             Self::MissionCreated { .. } => "mission_created",
             Self::StateChanged { .. } => "state_changed",
-            Self::MissionEscalated { .. } => "mission_escalated",
-            Self::MissionResumed { .. } => "mission_resumed",
-            Self::EvidenceGatheringStarted { .. } => "evidence_gathering_started",
-            Self::EvidenceFileDiscovered { .. } => "evidence_file_discovered",
-            Self::EvidenceGatheringCompleted { .. } => "evidence_gathering_completed",
-            Self::ComplexityAssessed { .. } => "complexity_assessed",
             Self::PlanGenerated { .. } => "plan_generated",
-            Self::PlanValidated { .. } => "plan_validated",
             Self::TaskStarted { .. } => "task_started",
             Self::TaskCompleted { .. } => "task_completed",
             Self::TaskFailed { .. } => "task_failed",
             Self::TaskSkipped { .. } => "task_skipped",
+            Self::TaskDeferred { .. } => "task_deferred",
             Self::TaskStatusChanged { .. } => "task_status_changed",
             Self::VerificationRound { .. } => "verification_round",
             Self::IssueDetected { .. } => "issue_detected",
             Self::IssueResolved { .. } => "issue_resolved",
             Self::ConvergenceAchieved { .. } => "convergence_achieved",
             Self::FixAttempted { .. } => "fix_attempted",
-            Self::FixStrategiesExhausted { .. } => "fix_strategies_exhausted",
             Self::PatternLearned { .. } => "pattern_learned",
             Self::PatternApplied { .. } => "pattern_applied",
             Self::PatternEvolved { .. } => "pattern_evolved",
             Self::CheckpointCreated { .. } => "checkpoint_created",
-            Self::DriftDetected { .. } => "drift_detected",
-            Self::ContextSwitch { .. } => "context_switch",
             Self::ConsensusRoundStarted { .. } => "consensus_round_started",
             Self::ConsensusVoteReceived { .. } => "consensus_vote_received",
             Self::ConsensusConflictDetected { .. } => "consensus_conflict_detected",
             Self::ConsensusConflictResolved { .. } => "consensus_conflict_resolved",
             Self::ConsensusRoundCompleted { .. } => "consensus_round_completed",
-            Self::ConsensusOscillationDetected { .. } => "consensus_oscillation_detected",
             Self::ConsensusEscalated { .. } => "consensus_escalated",
             Self::ConsensusCompleted { .. } => "consensus_completed",
             Self::MultiAgentPhaseCompleted { .. } => "multi_agent_phase_completed",
             Self::AgentMessageSent { .. } => "agent_message_sent",
             Self::AgentMessageReceived { .. } => "agent_message_received",
-            Self::AgentTaskAssigned { .. } => "agent_task_assigned",
-            Self::AgentTaskCompleted { .. } => "agent_task_completed",
             Self::AgentSpawned { .. } => "agent_spawned",
             Self::AgentTerminated { .. } => "agent_terminated",
             Self::AgentStatusChanged { .. } => "agent_status_changed",
-            Self::RulesInjected { .. } => "rules_injected",
-            Self::SkillActivated { .. } => "skill_activated",
-            Self::PersonaLoaded { .. } => "persona_loaded",
+            Self::ManifestContextInjected { .. } => "manifest_context_injected",
             Self::ConsensusProposalSubmitted { .. } => "consensus_proposal_submitted",
             Self::ConsensusModuleVote { .. } => "consensus_module_vote",
             Self::HierarchicalConsensusStarted { .. } => "hierarchical_consensus_started",
@@ -978,13 +875,9 @@ impl EventPayload {
             | Self::TaskCompleted { task_id, .. }
             | Self::TaskFailed { task_id, .. }
             | Self::TaskSkipped { task_id, .. }
+            | Self::TaskDeferred { task_id, .. }
             | Self::TaskStatusChanged { task_id, .. }
-            | Self::DriftDetected { task_id, .. }
-            | Self::ContextSwitch { task_id, .. }
-            | Self::AgentTaskAssigned { task_id, .. }
-            | Self::AgentTaskCompleted { task_id, .. }
-            | Self::RulesInjected { task_id, .. }
-            | Self::SkillActivated { task_id, .. } => Some(task_id),
+            | Self::ManifestContextInjected { task_id, .. } => Some(task_id),
             _ => None,
         }
     }
@@ -1086,8 +979,8 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_spawned_event() {
-        let event = DomainEvent::agent_spawned("m-1", "coder-0", "coder", Some("default"));
+    fn test_agent_spawned_event() -> std::result::Result<(), String> {
+        let event = DomainEvent::agent_spawned("m-1", "coder-0", RoleType::Coder, Some("default"));
         assert_eq!(event.event_type(), "agent_spawned");
         if let EventPayload::AgentSpawned {
             agent_id,
@@ -1096,10 +989,11 @@ mod tests {
         } = &event.payload
         {
             assert_eq!(agent_id, "coder-0");
-            assert_eq!(role, "coder");
+            assert_eq!(role, &RoleType::Coder);
             assert_eq!(persona, &Some("default".to_string()));
+            Ok(())
         } else {
-            panic!("wrong payload type");
+            Err(format!("wrong payload type: {:?}", event.payload.event_type()))
         }
     }
 
@@ -1110,29 +1004,17 @@ mod tests {
     }
 
     #[test]
-    fn test_rules_injected_event() {
-        let event = DomainEvent::rules_injected(
+    fn test_manifest_context_injected_event() {
+        let event = DomainEvent::new(
             "m-1",
-            "coder-0",
-            "t-1",
-            3,
-            vec!["tech".into(), "domain".into()],
+            EventPayload::ManifestContextInjected {
+                agent_id: "coder-0".into(),
+                task_id: "t-1".into(),
+                module_ids: vec!["auth".into(), "api".into()],
+            },
         );
-        assert_eq!(event.event_type(), "rules_injected");
+        assert_eq!(event.event_type(), "manifest_context_injected");
         assert_eq!(event.payload.task_id(), Some("t-1"));
-    }
-
-    #[test]
-    fn test_skill_activated_event() {
-        let event = DomainEvent::skill_activated("m-1", "coder-0", "t-1", "implement");
-        assert_eq!(event.event_type(), "skill_activated");
-        assert_eq!(event.payload.task_id(), Some("t-1"));
-    }
-
-    #[test]
-    fn test_persona_loaded_event() {
-        let event = DomainEvent::persona_loaded("m-1", "reviewer-0", "code-reviewer");
-        assert_eq!(event.event_type(), "persona_loaded");
     }
 
     #[test]
@@ -1149,22 +1031,33 @@ mod tests {
 
     #[test]
     fn test_consensus_module_vote_event() {
-        let event =
-            DomainEvent::consensus_module_vote("m-1", 1, "domain-auth-0", "auth", "approve", 0.85);
+        let event = DomainEvent::consensus_module_vote(
+            "m-1",
+            1,
+            "domain-auth-0",
+            "auth",
+            VoteDecision::Approve,
+            0.85,
+        );
         assert_eq!(event.event_type(), "consensus_module_vote");
     }
 
     #[test]
     fn test_all_new_events_serialize() {
         let events = vec![
-            DomainEvent::agent_spawned("m-1", "a-0", "coder", None),
+            DomainEvent::agent_spawned("m-1", "a-0", RoleType::Coder, None),
             DomainEvent::agent_terminated("m-1", "a-0", "done", 3),
-            DomainEvent::agent_status_changed("m-1", "a-0", "idle", "busy"),
-            DomainEvent::rules_injected("m-1", "a-0", "t-1", 2, vec![]),
-            DomainEvent::skill_activated("m-1", "a-0", "t-1", "plan"),
-            DomainEvent::persona_loaded("m-1", "a-0", "reviewer"),
+            DomainEvent::agent_status_changed("m-1", "a-0", AgentStatus::Ready, AgentStatus::Busy),
+            DomainEvent::new(
+                "m-1",
+                EventPayload::ManifestContextInjected {
+                    agent_id: "a-0".into(),
+                    task_id: "t-1".into(),
+                    module_ids: vec!["auth".into()],
+                },
+            ),
             DomainEvent::consensus_proposal_submitted("m-1", 1, "a-0", "hash", vec![]),
-            DomainEvent::consensus_module_vote("m-1", 1, "a-0", "auth", "approve", 0.9),
+            DomainEvent::consensus_module_vote("m-1", 1, "a-0", "auth", VoteDecision::Approve, 0.9),
         ];
 
         for event in events {

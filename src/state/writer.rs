@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::{self, JoinHandle};
 
 use rusqlite::{Connection, params};
@@ -11,45 +11,20 @@ use tracing::{debug, error, warn};
 use super::{events::DomainEvent, state_err, state_err_with};
 use crate::error::Result;
 
-/// Allocates global sequences for events across potentially distributed nodes.
-/// Format: [node_id:8bit][sequence:56bit] for future multi-node support.
-/// For single-node (current): node_id = 0, full sequence range.
 #[derive(Debug)]
 pub(crate) struct SequenceAllocator {
-    node_id: u8,
     next_seq: AtomicU64,
 }
 
 impl SequenceAllocator {
-    #[allow(dead_code)]
-    pub fn new(node_id: u8) -> Self {
+    pub fn new(initial_seq: u64) -> Self {
         Self {
-            node_id,
-            next_seq: AtomicU64::new(1),
-        }
-    }
-
-    pub fn with_initial_seq(node_id: u8, initial_seq: u64) -> Self {
-        Self {
-            node_id,
             next_seq: AtomicU64::new(initial_seq),
         }
     }
 
     pub fn next(&self) -> u64 {
-        let local_seq = self.next_seq.fetch_add(1, Ordering::SeqCst);
-        ((self.node_id as u64) << 56) | (local_seq & 0x00FF_FFFF_FFFF_FFFF)
-    }
-
-    #[allow(dead_code)]
-    pub fn current(&self) -> u64 {
-        let local_seq = self.next_seq.load(Ordering::SeqCst);
-        ((self.node_id as u64) << 56) | (local_seq.saturating_sub(1) & 0x00FF_FFFF_FFFF_FFFF)
-    }
-
-    #[allow(dead_code)]
-    pub fn node_id(&self) -> u8 {
-        self.node_id
+        self.next_seq.fetch_add(1, Ordering::SeqCst)
     }
 }
 
@@ -63,29 +38,37 @@ pub(super) enum WriteCommand {
         events: Vec<DomainEvent>,
         response: tokio::sync::oneshot::Sender<Result<Vec<u32>>>,
     },
+    ArchiveThrough {
+        global_seq: u64,
+        response: tokio::sync::oneshot::Sender<Result<u64>>,
+    },
+    Compact {
+        response: tokio::sync::oneshot::Sender<Result<()>>,
+    },
     Shutdown,
 }
 
 pub(super) struct EventWriter {
-    tx: Sender<WriteCommand>,
+    tx: SyncSender<WriteCommand>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl EventWriter {
-    pub fn new(db_path: PathBuf) -> Result<Self> {
-        Self::with_node_id(db_path, 0)
-    }
-
-    pub fn with_node_id(db_path: PathBuf, node_id: u8) -> Result<Self> {
-        let (tx, rx) = mpsc::channel::<WriteCommand>();
+    pub fn with_config(
+        db_path: PathBuf,
+        sync_mode: &str,
+        queue_capacity: usize,
+    ) -> Result<Self> {
+        let sync_mode = sync_mode.to_string();
+        let (tx, rx) = mpsc::sync_channel::<WriteCommand>(queue_capacity);
         let (ready_tx, ready_rx) = mpsc::channel::<Result<()>>();
 
         let handle = thread::Builder::new()
             .name("event-writer".into())
-            .spawn(move || match Self::init_db(&db_path) {
+            .spawn(move || match Self::init_db_with_config(&db_path, &sync_mode) {
                 Ok(conn) => {
                     let max_seq = Self::get_max_global_seq(&conn).unwrap_or(0);
-                    let allocator = SequenceAllocator::with_initial_seq(node_id, max_seq + 1);
+                    let allocator = SequenceAllocator::new(max_seq + 1);
                     let _ = ready_tx.send(Ok(()));
                     Self::process_commands(&conn, rx, allocator);
                 }
@@ -106,7 +89,7 @@ impl EventWriter {
         })
     }
 
-    pub fn sender(&self) -> Sender<WriteCommand> {
+    pub fn sender(&self) -> SyncSender<WriteCommand> {
         self.tx.clone()
     }
 
@@ -114,13 +97,22 @@ impl EventWriter {
         conn.query_row("SELECT MAX(global_seq) FROM events", [], |row| {
             row.get::<_, Option<i64>>(0)
         })
-        .map(|opt| opt.unwrap_or(0) as u64)
+        .map(|opt| {
+            let seq = opt.unwrap_or(0);
+            if seq < 0 {
+                warn!("Negative sequence number {} detected, resetting to 0", seq);
+            }
+            u64::try_from(seq.max(0)).unwrap_or(0)
+        })
         .map_err(|e| state_err_with("Failed to get max global_seq", e))
     }
 
-    fn init_db(db_path: &PathBuf) -> Result<Connection> {
+    fn init_db_with_config(db_path: &PathBuf, sync_mode: &str) -> Result<Connection> {
         let conn =
             Connection::open(db_path).map_err(|e| state_err_with("Failed to open database", e))?;
+        let pragma = format!("PRAGMA journal_mode=WAL; PRAGMA synchronous={sync_mode};");
+        conn.execute_batch(&pragma)
+            .map_err(|e| state_err_with("Failed to set WAL mode", e))?;
         Self::init_schema(&conn)?;
         Ok(conn)
     }
@@ -138,11 +130,30 @@ impl EventWriter {
                     response,
                 } => {
                     let result = Self::append_event(conn, *event, expected_version, &allocator);
-                    let _ = response.send(result);
+                    if response.send(result).is_err() {
+                        warn!("Event write response receiver dropped");
+                    }
                 }
                 WriteCommand::AppendBatch { events, response } => {
                     let result = Self::append_batch(conn, events, &allocator);
-                    let _ = response.send(result);
+                    if response.send(result).is_err() {
+                        warn!("Event write response receiver dropped");
+                    }
+                }
+                WriteCommand::ArchiveThrough {
+                    global_seq,
+                    response,
+                } => {
+                    let result = Self::archive_through(conn, global_seq);
+                    if response.send(result).is_err() {
+                        warn!("Archive response receiver dropped");
+                    }
+                }
+                WriteCommand::Compact { response } => {
+                    let result = Self::compact(conn);
+                    if response.send(result).is_err() {
+                        warn!("Compact response receiver dropped");
+                    }
                 }
                 WriteCommand::Shutdown => {
                     debug!("Writer thread received shutdown signal");
@@ -178,6 +189,8 @@ impl EventWriter {
                 ON events(correlation_id) WHERE correlation_id IS NOT NULL;
             CREATE INDEX IF NOT EXISTS idx_event_type_correlation
                 ON events(event_type, correlation_id) WHERE correlation_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_aggregate_global_seq
+                ON events(aggregate_id, global_seq);
 
             CREATE TABLE IF NOT EXISTS snapshots (
                 id TEXT PRIMARY KEY,
@@ -246,6 +259,8 @@ impl EventWriter {
         expected_version: Option<u32>,
         allocator: &SequenceAllocator,
     ) -> Result<u32> {
+        // Safety: unchecked_transaction is safe here because this connection is
+        // exclusively owned by the single writer thread (no concurrent access).
         let tx = conn
             .unchecked_transaction()
             .map_err(|e| state_err_with("Failed to start transaction", e))?;
@@ -315,6 +330,8 @@ impl EventWriter {
             return Ok(vec![]);
         }
 
+        // Safety: unchecked_transaction is safe here because this connection is
+        // exclusively owned by the single writer thread (no concurrent access).
         let tx = conn
             .unchecked_transaction()
             .map_err(|e| state_err_with("Failed to start transaction", e))?;
@@ -362,6 +379,59 @@ impl EventWriter {
         debug!(count = events.len(), "Batch events appended");
 
         Ok(versions)
+    }
+
+    fn archive_through(conn: &Connection, global_seq: u64) -> Result<u64> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS archived_events (
+                id TEXT PRIMARY KEY,
+                aggregate_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                global_seq INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                causation_id TEXT,
+                correlation_id TEXT
+            )",
+        )
+        .map_err(|e| state_err_with("Failed to create archive table", e))?;
+
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| state_err_with("Failed to start archive transaction", e))?;
+
+        tx.execute(
+            "INSERT INTO archived_events
+                SELECT id, aggregate_id, version, global_seq, event_type, timestamp, payload, causation_id, correlation_id
+                FROM events WHERE global_seq <= ?1",
+            params![global_seq as i64],
+        )
+        .map_err(|e| state_err_with("Failed to archive events", e))?;
+
+        let deleted = tx
+            .execute(
+                "DELETE FROM events WHERE global_seq <= ?1",
+                params![global_seq as i64],
+            )
+            .map_err(|e| state_err_with("Failed to delete archived events", e))?;
+
+        tx.commit()
+            .map_err(|e| state_err_with("Failed to commit archive", e))?;
+
+        debug!(global_seq, deleted, "Events archived");
+        Ok(deleted as u64)
+    }
+
+    fn compact(conn: &Connection) -> Result<()> {
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .map_err(|e| state_err_with("Failed to WAL checkpoint", e))?;
+
+        conn.execute_batch("VACUUM")
+            .map_err(|e| state_err_with("Failed to VACUUM", e))?;
+
+        debug!("Database compacted");
+        Ok(())
     }
 }
 

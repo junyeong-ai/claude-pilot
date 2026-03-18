@@ -28,7 +28,7 @@ macro_rules! impl_snapshot_methods {
                     use crate::error::PilotError;
                     let yaml = self.$field.as_ref()
                         .ok_or_else(|| PilotError::Recovery(
-                            concat!("Checkpoint has no ", $label, " snapshot").into()
+                            concat!("Mission checkpoint has no ", $label, " snapshot").into()
                         ))?;
                     serde_yaml_bw::from_str(yaml)
                         .map_err(|e| PilotError::Recovery(
@@ -52,7 +52,7 @@ macro_rules! impl_snapshot_methods {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Checkpoint {
+pub struct MissionCheckpoint {
     pub id: String,
     pub mission_id: String,
     pub created_at: DateTime<Utc>,
@@ -87,7 +87,7 @@ fn default_scope_factor() -> f32 {
     1.0
 }
 
-impl Checkpoint {
+impl MissionCheckpoint {
     pub fn from_mission(mission: &Mission, checkpoint_id: impl Into<String>) -> Self {
         let task_states = mission
             .tasks
@@ -147,11 +147,11 @@ impl Checkpoint {
     }
 }
 
-pub struct CheckpointManager {
+pub struct MissionCheckpointManager {
     checkpoints_dir: PathBuf,
 }
 
-impl CheckpointManager {
+impl MissionCheckpointManager {
     pub fn new(missions_dir: impl AsRef<Path>) -> Self {
         Self {
             checkpoints_dir: missions_dir.as_ref().to_path_buf(),
@@ -170,7 +170,7 @@ impl CheckpointManager {
             .join(format!("{}.yaml", checkpoint_id))
     }
 
-    pub async fn save(&self, checkpoint: &Checkpoint) -> Result<()> {
+    pub async fn save(&self, checkpoint: &MissionCheckpoint) -> Result<()> {
         let dir = self.checkpoint_dir(&checkpoint.mission_id);
         fs::create_dir_all(&dir).await?;
 
@@ -226,20 +226,20 @@ impl CheckpointManager {
         info!(
             checkpoint_id = checkpoint.id,
             mission_id = checkpoint.mission_id,
-            "Checkpoint saved"
+            "Mission checkpoint saved"
         );
 
         Ok(())
     }
 
-    pub async fn load(&self, mission_id: &str, checkpoint_id: &str) -> Result<Checkpoint> {
+    pub async fn load(&self, mission_id: &str, checkpoint_id: &str) -> Result<MissionCheckpoint> {
         let file = self.checkpoint_file(mission_id, checkpoint_id);
         let content = fs::read_to_string(&file).await?;
-        let checkpoint: Checkpoint = serde_yaml_bw::from_str(&content)?;
+        let checkpoint: MissionCheckpoint = serde_yaml_bw::from_str(&content)?;
         Ok(checkpoint)
     }
 
-    pub async fn list(&self, mission_id: &str) -> Result<Vec<Checkpoint>> {
+    pub async fn list(&self, mission_id: &str) -> Result<Vec<MissionCheckpoint>> {
         let dir = self.checkpoint_dir(mission_id);
 
         if !dir.exists() {
@@ -259,13 +259,13 @@ impl CheckpointManager {
             }
         }
 
-        checkpoints.sort_by(|a: &Checkpoint, b: &Checkpoint| b.created_at.cmp(&a.created_at));
+        checkpoints.sort_by(|a: &MissionCheckpoint, b: &MissionCheckpoint| b.created_at.cmp(&a.created_at));
         Ok(checkpoints)
     }
 
     /// Get the most recent checkpoint without loading all checkpoints.
     /// Uses filename sorting (timestamp-prefixed) to find the latest.
-    pub async fn latest(&self, mission_id: &str) -> Result<Option<Checkpoint>> {
+    pub async fn latest(&self, mission_id: &str) -> Result<Option<MissionCheckpoint>> {
         let dir = self.checkpoint_dir(mission_id);
 
         if !dir.exists() {
@@ -311,7 +311,7 @@ impl CheckpointManager {
         failure_histories: Option<
             &std::collections::HashMap<String, super::retry_analyzer::FailureHistory>,
         >,
-    ) -> Result<Checkpoint> {
+    ) -> Result<MissionCheckpoint> {
         let completed_count = mission
             .tasks
             .iter()
@@ -321,7 +321,7 @@ impl CheckpointManager {
         let timestamp = Utc::now().format("%Y%m%dT%H%M%SZ");
         let id = format!("{}_checkpoint-{:03}", timestamp, completed_count);
 
-        let mut checkpoint = Checkpoint::from_mission(mission, id).with_context_snapshot(context);
+        let mut checkpoint = MissionCheckpoint::from_mission(mission, id).with_context_snapshot(context);
 
         if let Some(ev) = evidence {
             checkpoint = checkpoint.with_evidence_snapshot(ev);
@@ -344,7 +344,7 @@ impl CheckpointManager {
             checkpoint_id = checkpoint.id,
             has_context = checkpoint.context_snapshot.is_some(),
             has_evidence = checkpoint.evidence_snapshot.is_some(),
-            "Checkpoint created with full state"
+            "Mission checkpoint created with full state"
         );
         Ok(checkpoint)
     }

@@ -130,13 +130,26 @@ impl Notifier {
     }
 
     async fn run_hook(&self, hook_cmd: &str, event: &MissionEvent) {
+        // Hook commands come from trusted config only (config.toml / NotificationConfig).
+        // Reject commands containing shell metacharacters as an extra safety layer.
+        const FORBIDDEN: &[char] = &['`', '$', '|', ';', '&', '\n', '\r'];
+        if hook_cmd.chars().any(|c| FORBIDDEN.contains(&c)) {
+            warn!(hook = %hook_cmd, "Rejected hook command containing shell metacharacters");
+            return;
+        }
+
         let json = match serde_json::to_string(event) {
             Ok(j) => j,
             Err(_) => return,
         };
 
-        let result = Command::new("sh")
-            .args(["-c", hook_cmd])
+        let args: Vec<&str> = hook_cmd.split_whitespace().collect();
+        let Some(program) = args.first() else {
+            return;
+        };
+
+        let result = Command::new(program)
+            .args(&args[1..])
             .env("PILOT_EVENT", event.event_type.as_str())
             .env("PILOT_MISSION_ID", &event.mission_id)
             .env("PILOT_EVENT_JSON", &json)

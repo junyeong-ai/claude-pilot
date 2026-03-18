@@ -4,7 +4,7 @@ use tokio::time::{Duration, sleep};
 use tracing::{debug, info, warn};
 
 use super::analyzer::FailureAnalyzer;
-use super::checkpoint::CheckpointManager;
+use super::checkpoint::MissionCheckpointManager;
 use super::escalation::EscalationHandler;
 use super::types::{CompactionLevel, FailureAnalysis, RecoveryStatus, RecoveryStrategy};
 use crate::config::{CheckpointConfig, CompactionConfig, CompactionLevelConfig};
@@ -14,7 +14,7 @@ use crate::mission::Mission;
 use crate::notification::Notifier;
 
 pub struct RecoveryExecutor {
-    checkpoint_manager: CheckpointManager,
+    checkpoint_manager: MissionCheckpointManager,
     escalation_handler: EscalationHandler,
     compaction_level_config: CompactionLevelConfig,
     checkpoint_config: CheckpointConfig,
@@ -28,7 +28,7 @@ impl RecoveryExecutor {
         checkpoint_config: CheckpointConfig,
     ) -> Self {
         Self {
-            checkpoint_manager: CheckpointManager::new(missions_dir),
+            checkpoint_manager: MissionCheckpointManager::new(missions_dir),
             escalation_handler: EscalationHandler::new(notifier),
             compaction_level_config,
             checkpoint_config,
@@ -124,34 +124,26 @@ impl RecoveryExecutor {
     fn build_compaction_settings(&self, level: CompactionLevel) -> CompactionConfig {
         let cfg = &self.compaction_level_config;
         let base = CompactionConfig::default();
+        let strategy = match level {
+            CompactionLevel::Light => &cfg.light,
+            CompactionLevel::Moderate => &cfg.moderate,
+            CompactionLevel::Aggressive => &cfg.aggressive,
+            CompactionLevel::Emergency => &cfg.emergency,
+        };
 
-        match level {
-            CompactionLevel::Light => CompactionConfig {
-                compaction_threshold: cfg.light_threshold,
-                aggressive_ratio: cfg.light_aggressive,
-                ..base
-            },
-            CompactionLevel::Moderate => CompactionConfig {
-                compaction_threshold: cfg.moderate_threshold,
-                aggressive_ratio: cfg.moderate_aggressive,
-                ..base
-            },
-            CompactionLevel::Aggressive => CompactionConfig {
-                compaction_threshold: cfg.aggressive_threshold,
-                aggressive_ratio: cfg.aggressive_ratio,
-                preserve_recent_tasks: cfg.aggressive_preserve_tasks,
-                preserve_recent_learnings: cfg.aggressive_preserve_learnings,
-                ..base
-            },
-            CompactionLevel::Emergency => CompactionConfig {
-                compaction_threshold: cfg.emergency_threshold,
-                aggressive_ratio: cfg.emergency_aggressive,
-                preserve_recent_tasks: cfg.emergency_preserve_tasks,
-                preserve_recent_learnings: cfg.emergency_preserve_learnings,
-                min_phase_age_for_compression: cfg.emergency_min_phase_age,
-                ..base
-            },
+        let mut result = CompactionConfig {
+            compaction_threshold: strategy.threshold,
+            aggressive_ratio: strategy.aggressive,
+            preserve_recent_tasks: strategy.preserve_tasks,
+            preserve_recent_learnings: strategy.preserve_learnings,
+            ..base
+        };
+
+        if matches!(level, CompactionLevel::Emergency) {
+            result.min_phase_age_for_compression = cfg.emergency_min_phase_age;
         }
+
+        result
     }
 
     async fn execute_chunk_and_retry(
@@ -458,5 +450,178 @@ impl RecoveryExecutor {
         );
 
         Ok(Some((checkpoint.id, failure_histories)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::recovery::types::{
+        CompactionLevel, FailureAnalysis, FailureCategory, FailurePhase, RecoveryAction,
+    };
+
+    fn test_executor() -> RecoveryExecutor {
+        let temp = std::env::temp_dir().join("claude-pilot-test-executor");
+        RecoveryExecutor::new(
+            temp,
+            None,
+            CompactionLevelConfig::default(),
+            CheckpointConfig::default(),
+        )
+    }
+
+    // ── build_compaction_settings ──
+
+    #[test]
+    fn test_build_compaction_settings_light() {
+        let executor = test_executor();
+        let cfg = &executor.compaction_level_config;
+        let settings = executor.build_compaction_settings(CompactionLevel::Light);
+        assert_eq!(settings.compaction_threshold, cfg.light.threshold);
+        assert_eq!(settings.aggressive_ratio, cfg.light.aggressive);
+        assert_eq!(settings.preserve_recent_tasks, cfg.light.preserve_tasks);
+    }
+
+    #[test]
+    fn test_build_compaction_settings_moderate() {
+        let executor = test_executor();
+        let cfg = &executor.compaction_level_config;
+        let settings = executor.build_compaction_settings(CompactionLevel::Moderate);
+        assert_eq!(settings.compaction_threshold, cfg.moderate.threshold);
+        assert_eq!(settings.aggressive_ratio, cfg.moderate.aggressive);
+    }
+
+    #[test]
+    fn test_build_compaction_settings_aggressive() {
+        let executor = test_executor();
+        let cfg = &executor.compaction_level_config;
+        let settings = executor.build_compaction_settings(CompactionLevel::Aggressive);
+        assert_eq!(settings.compaction_threshold, cfg.aggressive.threshold);
+        assert_eq!(settings.aggressive_ratio, cfg.aggressive.aggressive);
+        assert_eq!(settings.preserve_recent_tasks, cfg.aggressive.preserve_tasks);
+        assert_eq!(
+            settings.preserve_recent_learnings,
+            cfg.aggressive.preserve_learnings
+        );
+    }
+
+    #[test]
+    fn test_build_compaction_settings_emergency() {
+        let executor = test_executor();
+        let cfg = &executor.compaction_level_config;
+        let settings = executor.build_compaction_settings(CompactionLevel::Emergency);
+        assert_eq!(settings.compaction_threshold, cfg.emergency.threshold);
+        assert_eq!(settings.aggressive_ratio, cfg.emergency.aggressive);
+        assert_eq!(settings.preserve_recent_tasks, cfg.emergency.preserve_tasks);
+        assert_eq!(
+            settings.preserve_recent_learnings,
+            cfg.emergency.preserve_learnings
+        );
+        assert_eq!(
+            settings.min_phase_age_for_compression,
+            cfg.emergency_min_phase_age
+        );
+    }
+
+    #[test]
+    fn test_build_compaction_settings_progressive_thresholds() {
+        let executor = test_executor();
+        let light = executor.build_compaction_settings(CompactionLevel::Light);
+        let moderate = executor.build_compaction_settings(CompactionLevel::Moderate);
+        let aggressive = executor.build_compaction_settings(CompactionLevel::Aggressive);
+        let emergency = executor.build_compaction_settings(CompactionLevel::Emergency);
+
+        // More aggressive levels should have lower thresholds (compact more)
+        assert!(light.compaction_threshold > moderate.compaction_threshold);
+        assert!(moderate.compaction_threshold > aggressive.compaction_threshold);
+        assert!(aggressive.compaction_threshold > emergency.compaction_threshold);
+
+        // More aggressive levels should have lower aggressive_ratio (discard more)
+        assert!(light.aggressive_ratio > moderate.aggressive_ratio);
+        assert!(moderate.aggressive_ratio > aggressive.aggressive_ratio);
+        assert!(aggressive.aggressive_ratio > emergency.aggressive_ratio);
+    }
+
+    // ── should_auto_recover ──
+
+    #[tokio::test]
+    async fn test_should_auto_recover_recoverable() {
+        let executor = test_executor();
+        let analysis = FailureAnalysis::new(
+            FailureCategory::BuildFailure,
+            FailurePhase::Execution,
+            "build failed",
+        );
+        assert!(executor.should_auto_recover(&analysis).await);
+    }
+
+    #[tokio::test]
+    async fn test_should_auto_recover_unrecoverable() {
+        let executor = test_executor();
+        let analysis = FailureAnalysis::new(
+            FailureCategory::VerificationLoop,
+            FailurePhase::Verification,
+            "stuck in loop",
+        );
+        // VerificationLoop is fundamentally unrecoverable
+        assert!(!executor.should_auto_recover(&analysis).await);
+    }
+
+    #[tokio::test]
+    async fn test_should_auto_recover_exhausted_retries() {
+        let executor = test_executor();
+        let analysis = FailureAnalysis::new(
+            FailureCategory::BuildFailure,
+            FailurePhase::Execution,
+            "build failed",
+        )
+        .with_retry_count(100); // way over max retries
+        // Should escalate because retry count exceeds max
+        assert!(!executor.should_auto_recover(&analysis).await);
+    }
+
+    // ── execute_simple_retry ──
+
+    #[tokio::test]
+    async fn test_execute_simple_retry_no_delay() {
+        let executor = test_executor();
+        let result = executor.execute_simple_retry(0, 3).await.unwrap();
+        assert!(result.is_recovered());
+    }
+
+    // ── execute_chunk_and_retry ──
+
+    #[tokio::test]
+    async fn test_execute_chunk_and_retry() -> std::result::Result<(), String> {
+        let executor = test_executor();
+        let result = executor.execute_chunk_and_retry(0.5, 1.5).await.unwrap();
+        assert!(result.is_recovered());
+        if let RecoveryStatus::Recovered { action, .. } = &result {
+            assert!(matches!(
+                action,
+                RecoveryAction::RetryWithReducedChunks { .. }
+            ));
+            Ok(())
+        } else {
+            Err(format!("Expected Recovered status, got {:?}", result))
+        }
+    }
+
+    // ── execute_convergent_fix ──
+
+    #[tokio::test]
+    async fn test_execute_convergent_fix() -> std::result::Result<(), String> {
+        let executor = test_executor();
+        let result = executor.execute_convergent_fix(5).await.unwrap();
+        assert!(result.is_recovered());
+        if let RecoveryStatus::Recovered { action, .. } = &result {
+            assert!(matches!(
+                action,
+                RecoveryAction::StartConvergentVerification { max_rounds: 5 }
+            ));
+            Ok(())
+        } else {
+            Err(format!("Expected Recovered status, got {:?}", result))
+        }
     }
 }

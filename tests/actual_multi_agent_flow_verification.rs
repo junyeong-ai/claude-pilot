@@ -7,7 +7,7 @@ use std::sync::Arc;
 use claude_pilot::agent::multi::{
     AgentId, AgentMessage, AgentMessageBus, MessagePayload, ParticipantSet, TierLevel,
 };
-use claude_pilot::state::VoteDecision;
+use claude_pilot::domain::VoteDecision;
 
 // ============================================================================
 // PART 1: What WORKS - Verified Functionality
@@ -68,7 +68,7 @@ async fn verified_conflict_alert_broadcast() {
         "*",
         MessagePayload::ConflictAlert {
             conflict_id: "conflict-1".to_string(),
-            severity: claude_pilot::agent::multi::ConflictSeverity::Major,
+            severity: claude_pilot::domain::Severity::Error,
             description: "Module C and D have conflicting changes to shared interface".to_string(),
         },
     );
@@ -132,11 +132,10 @@ fn verified_multi_instance_participant_selection() {
 /// Test: Hierarchical tier structure is complete
 #[test]
 fn verified_tier_hierarchy() {
-    assert_eq!(TierLevel::Module.order(), 0);
-    assert_eq!(TierLevel::Group.order(), 1);
-    assert_eq!(TierLevel::Domain.order(), 2);
-    assert_eq!(TierLevel::Workspace.order(), 3);
-    assert_eq!(TierLevel::CrossWorkspace.order(), 4);
+    assert!(TierLevel::Module < TierLevel::Group);
+    assert!(TierLevel::Group < TierLevel::Domain);
+    assert!(TierLevel::Domain < TierLevel::Workspace);
+    assert!(TierLevel::Workspace < TierLevel::CrossWorkspace);
 
     assert_eq!(TierLevel::Module.parent(), Some(TierLevel::Group));
     assert_eq!(
@@ -149,62 +148,7 @@ fn verified_tier_hierarchy() {
 }
 
 // ============================================================================
-// PART 2: What's MISSING - Identified Gaps
-// ============================================================================
-
-/// FIXED: Parallel execution NOW broadcasts task assignments and results
-///
-/// The coordinator's run_implementation_phase NOW broadcasts for parallel tasks:
-/// - Before execution: broadcasts task assignments for all parallel tasks
-/// - After execution: broadcasts task results (to coordinator + broadcast to all)
-#[test]
-fn fixed_parallel_execution_broadcasts() {
-    // In coordinator.rs (FIXED):
-    // - Before pool.execute_many(): broadcasts task assignments for all tasks
-    // - After pool.execute_many(): broadcasts task results to all agents
-    //
-    // Lines 1001-1008: Broadcast task assignments before parallel execution
-    // Lines 1023-1024: Broadcast task results after parallel execution
-
-    println!("✅ FIXED: Parallel execution now broadcasts task assignments/results");
-    println!("   Location: coordinator.rs lines 1001-1054");
-    println!("   Behavior: All agents can observe parallel task progress");
-}
-
-/// GAP 2: Coders do not actively communicate with each other during execution
-///
-/// Each coder agent executes independently without inter-agent messaging.
-/// Conflict detection is passive (file ownership) not active (message exchange).
-#[test]
-fn gap_no_inter_coder_messaging() {
-    // In coder.rs:
-    // - CoderAgent has no reference to message bus
-    // - Execute() just calls task_agent.run() and returns result
-    // - No message sending to other coders about work status or conflicts
-    //
-    // The only conflict handling is through FileOwnershipManager in coordinator
-
-    println!("⚠️ GAP: Coders do not exchange messages during execution");
-    println!("   Impact: No active conflict detection between parallel coders");
-}
-
-/// FIXED: Task results are NOW broadcast to all agents
-///
-/// Results are sent to coordinator AND broadcast to all interested agents.
-#[test]
-fn fixed_results_broadcast_to_all() {
-    // In coordinator.rs broadcast_task_result() (FIXED):
-    // - Sends to "coordinator" for collection
-    // - ALSO broadcasts to "*" (all agents) for inter-agent visibility
-    //
-    // This enables agents to observe each other's work status and react to conflicts
-
-    println!("✅ FIXED: Task results broadcast to all agents");
-    println!("   Behavior: All agents can observe task completions in real-time");
-}
-
-// ============================================================================
-// PART 3: Integration Test - What actually flows end-to-end
+// PART 2: Integration Test - What actually flows end-to-end
 // ============================================================================
 
 /// Full scenario verification:
@@ -259,7 +203,7 @@ async fn actual_e2e_flow_verification() {
     // Broadcast consensus start
     let start_msg = AgentMessage::broadcast(
         "coordinator",
-        MessagePayload::Text {
+        MessagePayload::Broadcast {
             content: "Planning consensus starting".into(),
         },
     );
@@ -288,6 +232,7 @@ async fn actual_e2e_flow_verification() {
     for planner in &planners {
         let vote = AgentMessage::consensus_vote(
             planner.as_str(),
+            "coordinator",
             1,
             VoteDecision::Approve,
             format!("{} approves", planner.as_str()),

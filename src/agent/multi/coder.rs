@@ -7,10 +7,10 @@ use async_trait::async_trait;
 use tracing::{debug, warn};
 
 use super::messaging::{
-    AgentMessage, AgentMessageBus, FilteredReceiver, MessagePayload, MessageType,
+    AgentMessage, AgentMessageBus, AgentMessageType, FilteredReceiver, MessagePayload,
 };
 #[cfg(test)]
-use super::traits::extract_file_path;
+use super::core::extract_file_path;
 use super::traits::{
     AgentCore, AgentPromptBuilder, AgentRole, AgentTask, AgentTaskResult, ArtifactType,
     SpecializedAgent, TaskArtifact, extract_files_from_output,
@@ -78,7 +78,7 @@ impl CoderAgent {
         message_bus: &AgentMessageBus,
     ) -> Result<AgentTaskResult> {
         let mut receiver =
-            message_bus.subscribe_filtered(self.id(), vec![MessageType::ConflictAlert]);
+            message_bus.subscribe_filtered(self.id(), vec![AgentMessageType::ConflictAlert]);
 
         if let Some(resolution) = self.check_conflicts(&mut receiver) {
             match resolution {
@@ -134,15 +134,12 @@ impl CoderAgent {
     }
 
     fn build_coding_prompt(&self, task: &AgentTask) -> String {
-        let system_prompt = task.context.composed_prompt.as_deref().unwrap_or_else(|| {
-            debug!(
-                task_id = %task.id,
-                "No composed_prompt in task context, falling back to default CODER_SYSTEM_PROMPT"
-            );
-            CODER_SYSTEM_PROMPT
-        });
+        let system_prompt = match &task.context.manifest_context {
+            Some(ctx) if !ctx.is_empty() => format!("{}\n\n---\n\n{}", CODER_SYSTEM_PROMPT, ctx),
+            _ => CODER_SYSTEM_PROMPT.to_string(),
+        };
 
-        AgentPromptBuilder::new(system_prompt, "Implementation", task)
+        AgentPromptBuilder::new(&system_prompt, "Implementation", task)
             .with_context(task)
             .with_related_files(task)
             .with_section(
@@ -158,7 +155,7 @@ impl CoderAgent {
     }
 
     fn extract_modified_files(&self, output: &str) -> Vec<String> {
-        extract_files_from_output(output, 20)
+        extract_files_from_output(output, 20, None)
     }
 }
 
@@ -215,7 +212,7 @@ impl SpecializedAgent for CoderAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::multi::consensus::ConflictSeverity;
+    use crate::domain::Severity;
 
     #[test]
     fn test_extract_file_path() {
@@ -257,7 +254,7 @@ Updated src/lib.rs with new exports
             "agent-b",
             MessagePayload::ConflictAlert {
                 conflict_id: "c1".into(),
-                severity: ConflictSeverity::Blocking,
+                severity: Severity::Critical,
                 description: "test".into(),
             },
         );
@@ -267,7 +264,7 @@ Updated src/lib.rs with new exports
             "agent-a",
             MessagePayload::ConflictAlert {
                 conflict_id: "c1".into(),
-                severity: ConflictSeverity::Blocking,
+                severity: Severity::Critical,
                 description: "test".into(),
             },
         );
@@ -282,7 +279,7 @@ Updated src/lib.rs with new exports
         let agent = CoderAgent::new("test-coder".to_string(), task_agent);
         let bus = AgentMessageBus::default();
 
-        let mut receiver = bus.subscribe_filtered("test-coder", vec![MessageType::ConflictAlert]);
+        let mut receiver = bus.subscribe_filtered("test-coder", vec![AgentMessageType::ConflictAlert]);
         let conflict: Option<P2PConflictAction> = agent.check_conflicts(&mut receiver);
 
         assert!(conflict.is_none());

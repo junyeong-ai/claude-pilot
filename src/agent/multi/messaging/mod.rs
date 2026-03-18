@@ -21,4 +21,4 @@ mod message;
 
 pub use bus::{AgentMessageBus, AgentReceiver, FilteredReceiver};
 pub use handler::{MessageHandler, MessageHandlerRegistry};
-pub use message::{AgentMessage, MessagePayload, MessageType};
+pub use message::{AgentMessage, AgentMessageType, MessagePayload, ReviewVerdict};

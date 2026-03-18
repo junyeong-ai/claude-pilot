@@ -218,7 +218,7 @@ impl IndexedChunk {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchResult {
+pub struct ChunkSearchResult {
     pub chunk: IndexedChunk,
     pub score: f32,
     pub matched_keywords: Vec<String>,
@@ -289,7 +289,7 @@ impl AnalysisIndex {
         idx
     }
 
-    pub fn search(&self, query: &str) -> Vec<SearchResult> {
+    pub fn search(&self, query: &str) -> Vec<ChunkSearchResult> {
         let query_lower = query.to_lowercase();
         let query_words: Vec<&str> = query_lower.split_whitespace().collect();
 
@@ -311,7 +311,7 @@ impl AnalysisIndex {
             }
         }
 
-        let mut results: Vec<SearchResult> = candidate_indices
+        let mut results: Vec<ChunkSearchResult> = candidate_indices
             .into_iter()
             .filter_map(|(idx, _)| {
                 let chunk = &self.chunks[idx];
@@ -323,7 +323,7 @@ impl AnalysisIndex {
                         .map(|w| w.to_string())
                         .collect();
 
-                    Some(SearchResult {
+                    Some(ChunkSearchResult {
                         chunk: chunk.clone(),
                         score,
                         matched_keywords,

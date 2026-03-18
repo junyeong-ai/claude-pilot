@@ -8,7 +8,7 @@ use super::plan_agent::PlanAgent;
 use super::spec::SpecificationAgent;
 use super::tasks::TaskDecomposer;
 use super::validation::{PlanValidator, ValidationResult};
-use crate::config::{AgentConfig, EvidenceConfig, QualityConfig, TaskDecompositionConfig};
+use crate::config::{AgentConfig, EvidenceBudgetConfig, QualityConfig, TaskDecompositionConfig};
 use crate::error::Result;
 use crate::mission::RiskLevel;
 use crate::mission::{IsolationMode, Mission, Phase};
@@ -30,7 +30,7 @@ pub struct PlanningOrchestrator {
     task_decomposer: TaskDecomposer,
     validator: PlanValidator,
     ai_validation_enabled: bool,
-    evidence_config: EvidenceConfig,
+    evidence_config: EvidenceBudgetConfig,
     quality_config: QualityConfig,
 }
 
@@ -40,7 +40,7 @@ impl PlanningOrchestrator {
         ai_validation: bool,
         agent_config: &AgentConfig,
         quality_config: QualityConfig,
-        evidence_config: EvidenceConfig,
+        evidence_config: EvidenceBudgetConfig,
         task_decomposition_config: TaskDecompositionConfig,
     ) -> Result<Self> {
         Ok(Self {
@@ -77,7 +77,7 @@ impl PlanningOrchestrator {
         );
 
         // Tier-based quality assessment - Red tier fails, Yellow warns
-        let assessment = evidence.get_quality_tier(&self.quality_config);
+        let assessment = evidence.quality_tier(&self.quality_config);
         match assessment.tier {
             super::validation::QualityTier::Red => {
                 warn!(
@@ -92,6 +92,18 @@ impl PlanningOrchestrator {
                 )));
             }
             super::validation::QualityTier::Yellow => {
+                if self.quality_config.require_green_tier {
+                    warn!(
+                        quality_score = %format!("{:.1}%", assessment.quality_score * 100.0),
+                        confidence = %format!("{:.1}%", assessment.confidence * 100.0),
+                        tier = "YELLOW",
+                        "Evidence quality insufficient - require_green_tier is enabled"
+                    );
+                    return Err(crate::error::PilotError::EvidenceGathering(format!(
+                        "Evidence YELLOW tier: {} - Green tier evidence quality required",
+                        assessment.format_for_llm()
+                    )));
+                }
                 warn!(
                     quality_score = %format!("{:.1}%", assessment.quality_score * 100.0),
                     confidence = %format!("{:.1}%", assessment.confidence * 100.0),

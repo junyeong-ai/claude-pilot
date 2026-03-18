@@ -122,11 +122,10 @@ impl ProgressTracker {
     }
 
     fn consecutive_stagnation(&self) -> u32 {
-        if self.history.is_empty() {
+        let Some(last) = self.history.last() else {
             return 0;
-        }
-
-        let current_count = self.history.last().unwrap().issue_count;
+        };
+        let current_count = last.issue_count;
         self.history
             .iter()
             .rev()

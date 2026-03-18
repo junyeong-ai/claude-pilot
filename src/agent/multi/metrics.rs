@@ -89,7 +89,7 @@ impl ConsensusMetrics {
     }
 
     /// Get current metrics snapshot.
-    pub fn snapshot(&self) -> MetricsSnapshot {
+    pub fn snapshot(&self) -> ConsensusMetricsSnapshot {
         let started = self.sessions.started.load(Ordering::Relaxed);
         let converged = self.sessions.converged.load(Ordering::Relaxed);
         let partial = self.sessions.partial.load(Ordering::Relaxed);
@@ -123,7 +123,7 @@ impl ConsensusMetrics {
             0.0
         };
 
-        MetricsSnapshot {
+        ConsensusMetricsSnapshot {
             sessions: SessionSnapshot {
                 started,
                 completed,
@@ -286,13 +286,13 @@ impl StrategyMetrics {
 
 /// Snapshot of all consensus metrics.
 #[derive(Debug, Clone)]
-pub struct MetricsSnapshot {
+pub struct ConsensusMetricsSnapshot {
     pub sessions: SessionSnapshot,
     pub strategies: StrategySnapshot,
     pub tiers: TierSnapshot,
 }
 
-impl MetricsSnapshot {
+impl ConsensusMetricsSnapshot {
     pub fn summary(&self) -> String {
         format!(
             "Sessions: {}/{} converged ({:.1}%), Strategies: direct={} flat={} hier={}, Avg rounds: {:.1}",

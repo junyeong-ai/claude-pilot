@@ -6,10 +6,12 @@
 //! - Planning agents from ALL affected modules gather and reach consensus
 //! - Coders from ALL affected modules implement according to the plan
 
+mod test_helpers;
+
 use claude_pilot::agent::multi::{
     AgentId, AgentMessage, AgentMessageBus, MessagePayload, ParticipantSet, TierLevel,
 };
-use claude_pilot::state::VoteDecision;
+use claude_pilot::domain::VoteDecision;
 
 /// Test 1: Verify broadcast messages are received by ALL subscribers
 #[tokio::test]
@@ -26,7 +28,7 @@ async fn test_broadcast_received_by_all_agents() {
     // Send broadcast message
     let msg = AgentMessage::broadcast(
         "coordinator",
-        MessagePayload::Text {
+        MessagePayload::Broadcast {
             content: "Consensus round starting - all agents participate".into(),
         },
     );
@@ -414,7 +416,7 @@ async fn test_full_cross_workspace_e2e_scenario() {
     // Coordinator broadcasts consensus start
     let start_msg = AgentMessage::broadcast(
         "cross-workspace-coordinator",
-        MessagePayload::Text {
+        MessagePayload::Broadcast {
             content: "Cross-workspace planning consensus starting".into(),
         },
     );
@@ -440,6 +442,7 @@ async fn test_full_cross_workspace_e2e_scenario() {
     for planner in &planners {
         let vote = AgentMessage::consensus_vote(
             planner.as_str(),
+            "coordinator",
             1,
             VoteDecision::Approve,
             format!("{} approves the plan", planner.as_str()),
@@ -473,11 +476,10 @@ async fn test_full_cross_workspace_e2e_scenario() {
 #[test]
 fn test_tier_level_cross_workspace_support() {
     // Verify TierLevel hierarchy is complete
-    assert_eq!(TierLevel::Module.order(), 0);
-    assert_eq!(TierLevel::Group.order(), 1);
-    assert_eq!(TierLevel::Domain.order(), 2);
-    assert_eq!(TierLevel::Workspace.order(), 3);
-    assert_eq!(TierLevel::CrossWorkspace.order(), 4);
+    assert!(TierLevel::Module < TierLevel::Group);
+    assert!(TierLevel::Group < TierLevel::Domain);
+    assert!(TierLevel::Domain < TierLevel::Workspace);
+    assert!(TierLevel::Workspace < TierLevel::CrossWorkspace);
 
     // Verify parent chain
     assert_eq!(TierLevel::Module.parent(), Some(TierLevel::Group));
@@ -511,26 +513,17 @@ mod real_llm_tests {
     use claude_pilot::agent::TaskAgent;
     use claude_pilot::agent::multi::{
         AdaptiveConsensusExecutor, AgentMessageBus, AgentPoolBuilder, CoderAgent, ConsensusEngine,
-        Coordinator, PlanningAgent, ResearchAgent, ReviewerAgent, SpecializedAgent, VerifierAgent,
+        Coordinator, SpecializedAgent,
         WorkspaceInfo, WorkspaceRegistry,
     };
-    use claude_pilot::config::{AgentConfig, ConsensusConfig, MultiAgentConfig};
-    use claude_pilot::state::{EventPayload, EventStore};
+    use claude_pilot::config::{ConsensusConfig, MultiAgentConfig};
+    use claude_pilot::state::EventPayload;
     use claude_pilot::workspace::Workspace;
 
-    fn create_task_agent() -> Arc<TaskAgent> {
-        Arc::new(TaskAgent::new(AgentConfig::default()))
-    }
-
     fn create_agent_set(task_agent: Arc<TaskAgent>) -> Vec<Arc<dyn SpecializedAgent>> {
-        vec![
-            ResearchAgent::with_id("research-0", Arc::clone(&task_agent)),
-            PlanningAgent::with_id("planning-0", Arc::clone(&task_agent)),
-            CoderAgent::with_id("coder-0", Arc::clone(&task_agent)),
-            CoderAgent::with_id("coder-1", Arc::clone(&task_agent)),
-            VerifierAgent::with_id("verifier-0", Arc::clone(&task_agent)),
-            ReviewerAgent::with_id("reviewer-0", Arc::clone(&task_agent)),
-        ]
+        let mut agents = super::test_helpers::create_core_agents(Arc::clone(&task_agent));
+        agents.push(CoderAgent::with_id("coder-1", task_agent));
+        agents
     }
 
     /// Create a multi-module test project directory with manifest.
@@ -685,9 +678,7 @@ edition = "2021"
             create_test_project("project-beta", &["billing", "notifications"]).await;
 
         // 2. Set up shared infrastructure
-        let events_dir = temp_a.path().join(".pilot/events");
-        fs::create_dir_all(&events_dir).unwrap();
-        let event_store = Arc::new(EventStore::new(events_dir.join("events.db")).unwrap());
+        let event_store = super::test_helpers::setup_event_store(temp_a.path());
 
         let message_bus =
             Arc::new(AgentMessageBus::default().with_event_store(Arc::clone(&event_store)));
@@ -720,7 +711,7 @@ edition = "2021"
         config.enabled = true;
         config.dynamic_mode = true;
 
-        let task_agent = create_task_agent();
+        let task_agent = super::test_helpers::create_task_agent();
 
         let pool = AgentPoolBuilder::new(config.clone())
             .with_agents(create_agent_set(task_agent.clone()))
@@ -794,7 +785,7 @@ edition = "2021"
                             converged,
                             ..
                         } => {
-                            *tier_events.entry(tier_level.clone()).or_insert(0) += 1;
+                            *tier_events.entry(tier_level.to_string()).or_insert(0) += 1;
                             println!(
                                 "  Tier completed: {} (converged: {})",
                                 tier_level, converged
@@ -834,9 +825,7 @@ edition = "2021"
         let (temp_dir, workspace) = create_test_project("replay-test", &["mod_a", "mod_b"]).await;
 
         // Create persistent event store
-        let events_dir = temp_dir.path().join(".pilot/events");
-        fs::create_dir_all(&events_dir).unwrap();
-        let event_store = Arc::new(EventStore::new(events_dir.join("events.db")).unwrap());
+        let event_store = super::test_helpers::setup_event_store(temp_dir.path());
 
         let message_bus =
             Arc::new(AgentMessageBus::default().with_event_store(Arc::clone(&event_store)));
@@ -844,7 +833,7 @@ edition = "2021"
         let mut config = MultiAgentConfig::default();
         config.enabled = true;
 
-        let task_agent = create_task_agent();
+        let task_agent = super::test_helpers::create_task_agent();
 
         let pool = AgentPoolBuilder::new(config.clone())
             .with_agents(create_agent_set(task_agent.clone()))

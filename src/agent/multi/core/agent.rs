@@ -34,8 +34,7 @@ impl AgentRole {
         }
     }
 
-    /// Get the role ID.
-    pub fn name(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.id
     }
 
@@ -429,13 +428,13 @@ impl AgentMetrics {
         }
     }
 
-    pub fn snapshot(&self) -> MetricsSnapshot {
+    pub fn snapshot(&self) -> AgentExecutionMetrics {
         let total = self.total_executions.load(Ordering::Relaxed);
         let successful = self.successful_executions.load(Ordering::Relaxed);
         let failed = self.failed_executions.load(Ordering::Relaxed);
         let total_ms = self.total_duration_ms.load(Ordering::Relaxed);
 
-        MetricsSnapshot {
+        AgentExecutionMetrics {
             total_executions: total,
             successful_executions: successful,
             failed_executions: failed,
@@ -450,7 +449,7 @@ impl AgentMetrics {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct MetricsSnapshot {
+pub struct AgentExecutionMetrics {
     pub total_executions: u64,
     pub successful_executions: u64,
     pub failed_executions: u64,

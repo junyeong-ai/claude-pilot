@@ -13,21 +13,15 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::config::FocusConfig;
+use crate::domain::Severity;
 use crate::planning::{Evidence, PlanArtifact, TasksArtifact};
-use crate::verification::FileChanges;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WarningSeverity {
-    Low,
-    Medium,
-    High,
-}
+use crate::verification::TrackedFileChanges;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DriftWarning {
     UnexpectedFile {
         file: PathBuf,
-        severity: WarningSeverity,
+        severity: Severity,
         reason: String,
     },
     CrossModuleChange {
@@ -48,17 +42,17 @@ pub enum DriftWarning {
 }
 
 impl DriftWarning {
-    pub fn severity(&self) -> WarningSeverity {
+    pub fn severity(&self) -> Severity {
         match self {
             Self::UnexpectedFile { severity, .. } => *severity,
-            Self::CrossModuleChange { .. } => WarningSeverity::Medium,
+            Self::CrossModuleChange { .. } => Severity::Warning,
             Self::TooManyContextSwitches {
                 count, threshold, ..
             } => {
                 if *count > threshold * 2 {
-                    WarningSeverity::High
+                    Severity::Error
                 } else {
-                    WarningSeverity::Medium
+                    Severity::Warning
                 }
             }
             Self::ScopeCreep {
@@ -68,11 +62,11 @@ impl DriftWarning {
             } => {
                 let ratio = *actual_files as f32 / (*expected_files).max(1) as f32;
                 if ratio > 3.0 {
-                    WarningSeverity::High
+                    Severity::Error
                 } else if ratio > 2.0 {
-                    WarningSeverity::Medium
+                    Severity::Warning
                 } else {
-                    WarningSeverity::Low
+                    Severity::Info
                 }
             }
         }
@@ -133,7 +127,7 @@ pub enum FileClassification {
 pub struct CompletionValidation {
     pub task_id: String,
     pub expected_scope: ExpectedScope,
-    pub actual_changes: FileChanges,
+    pub actual_changes: TrackedFileChanges,
     pub warnings: Vec<DriftWarning>,
     pub context_switches: u32,
     pub modules_touched: Vec<String>,
@@ -262,7 +256,7 @@ impl FocusTracker {
     pub fn validate_completion(
         &mut self,
         task_id: &str,
-        changes: &FileChanges,
+        changes: &TrackedFileChanges,
     ) -> CompletionValidation {
         let Some(scope) = self.active_scopes.remove(task_id) else {
             return CompletionValidation {
@@ -288,7 +282,7 @@ impl FocusTracker {
                     if self.config.warn_on_unexpected_files {
                         warnings.push(DriftWarning::UnexpectedFile {
                             file: (*path).clone(),
-                            severity: WarningSeverity::Low,
+                            severity: Severity::Info,
                             reason: "File in expected module but not explicitly listed".into(),
                         });
                     }
@@ -296,9 +290,9 @@ impl FocusTracker {
                 FileClassification::Unexpected => {
                     unexpected_files.push((*path).clone());
                     let severity = if self.config.strict_module_boundaries {
-                        WarningSeverity::High
+                        Severity::Error
                     } else {
-                        WarningSeverity::Medium
+                        Severity::Warning
                     };
                     warnings.push(DriftWarning::UnexpectedFile {
                         file: (*path).clone(),
@@ -333,7 +327,7 @@ impl FocusTracker {
 
         let has_high_severity = warnings
             .iter()
-            .any(|w| w.severity() == WarningSeverity::High);
+            .any(|w| w.severity() == Severity::Error);
 
         if !warnings.is_empty() {
             for warning in &warnings {
@@ -477,7 +471,7 @@ mod tests {
         tracker.record_file_access("T1", Path::new("src/planning/mod.rs"));
         tracker.record_file_access("T1", Path::new("src/recovery/mod.rs"));
 
-        let changes = FileChanges {
+        let changes = TrackedFileChanges {
             created: vec![],
             modified: vec![
                 PathBuf::from("src/agent/mod.rs"),
@@ -502,17 +496,17 @@ mod tests {
     fn test_drift_warning_severity() {
         let warning = DriftWarning::UnexpectedFile {
             file: PathBuf::from("test.rs"),
-            severity: WarningSeverity::High,
+            severity: Severity::Error,
             reason: "test".into(),
         };
-        assert_eq!(warning.severity(), WarningSeverity::High);
+        assert_eq!(warning.severity(), Severity::Error);
 
         let warning = DriftWarning::ScopeCreep {
             expected_files: 2,
             actual_files: 10,
             unexpected: vec![],
         };
-        assert_eq!(warning.severity(), WarningSeverity::High);
+        assert_eq!(warning.severity(), Severity::Error);
     }
 
     #[test]
@@ -526,7 +520,7 @@ mod tests {
         let scope = ExpectedScope::new("T1");
         tracker.start_task("T1", scope);
 
-        let changes = FileChanges::default();
+        let changes = TrackedFileChanges::default();
         let validation = tracker.validate_completion("T1", &changes);
 
         assert!(validation.passed);

@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 
 use super::PromptBuilder;
 use super::executor::LlmExecutor;
-use super::multi::PermissionProfile;
+use super::multi::shared::PermissionProfile;
 use crate::config::{
     AgentConfig, BuildSystem, DisplayConfig, ModelAgentType, TaskBudgetConfig, VerificationConfig,
 };

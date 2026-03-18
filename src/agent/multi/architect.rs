@@ -4,6 +4,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use super::traits::{
@@ -16,15 +18,15 @@ use crate::error::Result;
 
 /// System prompt for design validation.
 ///
-/// # Distinction from ArchitectureAgent
+/// # Distinction from BoundaryEnforcementAgent
 ///
 /// - **ArchitectAgent** (this): High-level design advisor that validates architectural decisions
 ///   for consistency, cohesion, and maintainability. Participates in consensus as `Advisor` role.
 ///   Uses the `Plan` skill.
 ///
-/// - **ArchitectureAgent**: Runtime enforcement agent that detects boundary violations and
+/// - **BoundaryEnforcementAgent**: Runtime enforcement agent that detects boundary violations and
 ///   convention breaches based on project-specific rules. Uses `Architecture` role category.
-const ARCHITECT_SYSTEM_PROMPT: &str = r"You are an Architect Agent focused on design validation and long-term consistency.
+const ARCHITECT_SYSTEM_PROMPT: &str = r#"You are an Architect Agent focused on design validation and long-term consistency.
 
 ## Responsibilities
 - Validate design decisions against established patterns
@@ -39,12 +41,16 @@ const ARCHITECT_SYSTEM_PROMPT: &str = r"You are an Architect Agent focused on de
 4. Scalability: Accommodate future growth
 5. Maintainability: Prefer simple solutions
 
-## Output Format
-- `PASS` - Design is sound
-- `CONCERNS` - Design has minor issues to address
-- `FAIL` - Design violates core principles
+## Response Format
+Respond with a JSON object containing:
+- "verdict": one of "pass", "concerns", or "fail"
+- "findings": array of objects with "description" and "category" fields
 
-Include specific findings with rationale.";
+Categories: "consistency", "cohesion", "coupling", "scalability", "maintainability", "security", "other"
+
+Example:
+{"verdict": "concerns", "findings": [{"description": "Module X has tight coupling with Y", "category": "coupling"}]}
+"#;
 
 pub struct ArchitectAgent {
     core: AgentCore,
@@ -62,11 +68,13 @@ impl ArchitectAgent {
     }
 
     fn build_prompt(&self, task: &AgentTask) -> String {
-        let system_prompt = task
-            .context
-            .composed_prompt
-            .as_deref()
-            .unwrap_or(ARCHITECT_SYSTEM_PROMPT);
+        let system_prompt = match &task.context.manifest_context {
+            Some(ctx) if !ctx.is_empty() => {
+                format!("{}\n\n---\n\n{}", ARCHITECT_SYSTEM_PROMPT, ctx)
+            }
+            _ => ARCHITECT_SYSTEM_PROMPT.to_string(),
+        };
+        let system_prompt = system_prompt.as_str();
 
         AgentPromptBuilder::new(system_prompt, "Design Validation", task)
             .with_context(task)
@@ -82,41 +90,36 @@ impl ArchitectAgent {
             )
             .build()
     }
-
-    fn extract_verdict(output: &str) -> Verdict {
-        let upper = output.to_uppercase();
-        if upper.contains("FAIL") || upper.contains("REJECTED") {
-            Verdict::Fail
-        } else if upper.contains("CONCERNS") || upper.contains("WARNING") {
-            Verdict::Concerns
-        } else {
-            Verdict::Pass
-        }
-    }
-
-    fn extract_findings(output: &str) -> Vec<String> {
-        output
-            .lines()
-            .filter(|line| {
-                let lower = line.to_lowercase();
-                lower.contains("concern")
-                    || lower.contains("warning")
-                    || lower.contains("risk")
-                    || lower.contains("violation")
-                    || lower.contains("issue")
-            })
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .take(10)
-            .collect()
-    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Verdict {
+/// Verdict for architect review — uses structured output, not string matching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Verdict {
     Pass,
     Concerns,
     Fail,
+}
+
+/// A single finding from the architect review.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub(crate) struct ArchitectFinding {
+    pub description: String,
+    #[serde(default = "default_category")]
+    pub category: String,
+}
+
+fn default_category() -> String {
+    "other".to_string()
+}
+
+/// Structured response from the architect agent.
+/// Uses `schemars::JsonSchema` for LLM structured output (no English keyword matching).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub(crate) struct ArchitectReviewResponse {
+    pub verdict: Verdict,
+    #[serde(default)]
+    pub findings: Vec<ArchitectFinding>,
 }
 
 #[async_trait]
@@ -143,17 +146,22 @@ impl SpecializedAgent for ArchitectAgent {
         debug!(task_id = %task.id, "Architect agent executing");
 
         let prompt = self.build_prompt(task);
-        let output = self
+        let response: std::result::Result<ArchitectReviewResponse, _> = self
             .core
             .task_agent
-            .run_with_profile(&prompt, working_dir, self.role().permission_profile())
+            .run_prompt_review(&prompt, working_dir)
             .await;
 
-        match output {
-            Ok(output) => {
-                let verdict = Self::extract_verdict(&output);
-                let findings = Self::extract_findings(&output);
-                let result = if verdict != Verdict::Fail {
+        match response {
+            Ok(review) => {
+                let output = serde_json::to_string_pretty(&review)
+                    .unwrap_or_else(|_| format!("{:?}", review));
+                let findings: Vec<String> = review
+                    .findings
+                    .iter()
+                    .map(|f| format!("[{}] {}", f.category, f.description))
+                    .collect();
+                let result = if review.verdict != Verdict::Fail {
                     AgentTaskResult::success(&task.id, output.clone())
                 } else {
                     AgentTaskResult::failure(&task.id, output.clone())
@@ -180,60 +188,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_verdict_pass() {
-        assert_eq!(
-            ArchitectAgent::extract_verdict("PASS - looks good"),
-            Verdict::Pass
-        );
-        assert_eq!(
-            ArchitectAgent::extract_verdict("Design is sound"),
-            Verdict::Pass
-        );
+    fn test_deserialize_pass() {
+        let json = r#"{"verdict": "pass", "findings": []}"#;
+        let resp: ArchitectReviewResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.verdict, Verdict::Pass);
+        assert!(resp.findings.is_empty());
     }
 
     #[test]
-    fn test_extract_verdict_concerns() {
-        assert_eq!(
-            ArchitectAgent::extract_verdict("CONCERNS: coupling issue"),
-            Verdict::Concerns
-        );
-        assert_eq!(
-            ArchitectAgent::extract_verdict("WARNING: boundary violation"),
-            Verdict::Concerns
-        );
+    fn test_deserialize_concerns_with_findings() {
+        let json = r#"{
+            "verdict": "concerns",
+            "findings": [
+                {"description": "tight coupling between modules", "category": "coupling"},
+                {"description": "circular dependency risk", "category": "cohesion"}
+            ]
+        }"#;
+        let resp: ArchitectReviewResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.verdict, Verdict::Concerns);
+        assert_eq!(resp.findings.len(), 2);
+        assert!(resp.findings[0].description.contains("coupling"));
+        assert_eq!(resp.findings[1].category, "cohesion");
     }
 
     #[test]
-    fn test_extract_verdict_fail() {
-        assert_eq!(
-            ArchitectAgent::extract_verdict("FAIL: architecture violation"),
-            Verdict::Fail
-        );
-        assert_eq!(
-            ArchitectAgent::extract_verdict("REJECTED: breaks patterns"),
-            Verdict::Fail
-        );
+    fn test_deserialize_fail() {
+        let json = r#"{"verdict": "fail", "findings": [{"description": "violates core principles"}]}"#;
+        let resp: ArchitectReviewResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.verdict, Verdict::Fail);
+        assert_eq!(resp.findings.len(), 1);
+        // category defaults to "other" when omitted
+        assert_eq!(resp.findings[0].category, "other");
     }
 
     #[test]
-    fn test_extract_findings() {
-        let output = r#"
-Design Review:
-- Concern: tight coupling between modules
-- Warning: circular dependency risk
-- Risk: performance under load
-- Note: consider refactoring later
-"#;
-        let findings = ArchitectAgent::extract_findings(output);
-        assert_eq!(findings.len(), 3);
-        assert!(findings[0].contains("coupling"));
+    fn test_deserialize_missing_findings_defaults_empty() {
+        let json = r#"{"verdict": "pass"}"#;
+        let resp: ArchitectReviewResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.verdict, Verdict::Pass);
+        assert!(resp.findings.is_empty());
     }
 
     #[test]
-    fn test_extract_findings_empty() {
-        let output = "Everything looks good. PASS";
-        let findings = ArchitectAgent::extract_findings(output);
-        assert!(findings.is_empty());
+    fn test_roundtrip_serialization() {
+        let resp = ArchitectReviewResponse {
+            verdict: Verdict::Concerns,
+            findings: vec![ArchitectFinding {
+                description: "test finding".into(),
+                category: "maintainability".into(),
+            }],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: ArchitectReviewResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.verdict, Verdict::Concerns);
+        assert_eq!(parsed.findings.len(), 1);
     }
 
     #[test]

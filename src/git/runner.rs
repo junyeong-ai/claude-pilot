@@ -4,7 +4,33 @@ use std::process::Output;
 use tokio::process::Command;
 use tracing::{debug, warn};
 
-use crate::error::{PilotError, Result};
+use crate::error::{GitError, PilotError, Result};
+
+/// Command injection defense for git ref arguments.
+/// Git ref format validation is delegated to git itself.
+fn validate_ref_name(name: &str) -> Result<()> {
+    if name.is_empty() || name.trim().is_empty() {
+        return Err(PilotError::from(GitError::Git(
+            git2::Error::from_str("empty ref name"),
+        )));
+    }
+    if name.starts_with('-') {
+        return Err(PilotError::from(GitError::Git(
+            git2::Error::from_str(&format!("ref name must not start with '-': {}", name)),
+        )));
+    }
+    if name.contains('\0') || name.contains('\n') || name.contains('\r') {
+        return Err(PilotError::from(GitError::Git(
+            git2::Error::from_str("ref name contains null or newline"),
+        )));
+    }
+    if name.contains("..") {
+        return Err(PilotError::from(GitError::Git(
+            git2::Error::from_str(&format!("ref name must not contain '..': {}", name)),
+        )));
+    }
+    Ok(())
+}
 
 pub struct GitRunner {
     working_dir: PathBuf,
@@ -15,10 +41,6 @@ impl GitRunner {
         Self {
             working_dir: working_dir.into(),
         }
-    }
-
-    pub fn with_dir(&self, dir: &Path) -> Self {
-        Self::new(dir)
     }
 
     pub async fn run(&self, args: &[&str]) -> Result<Output> {
@@ -43,7 +65,7 @@ impl GitRunner {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(PilotError::Git(git2::Error::from_str(&stderr)));
+            return Err(GitError::Git(git2::Error::from_str(&stderr)).into());
         }
 
         Ok(output)
@@ -62,29 +84,34 @@ impl GitRunner {
             if stderr.contains("nothing to commit") {
                 return Ok(false);
             }
-            return Err(PilotError::Git(git2::Error::from_str(&stderr)));
+            return Err(GitError::Git(git2::Error::from_str(&stderr)).into());
         }
 
         Ok(true)
     }
 
     pub async fn checkout(&self, branch: &str) -> Result<()> {
+        validate_ref_name(branch)?;
         self.run_checked(&["checkout", branch]).await?;
         Ok(())
     }
 
     pub async fn merge(&self, branch: &str, message: &str) -> Result<()> {
-        self.run_checked(&["merge", "--no-ff", branch, "-m", message])
+        validate_ref_name(branch)?;
+        self.run_checked(&["merge", "--no-ff", "-m", message, "--", branch])
             .await?;
         Ok(())
     }
 
     pub async fn push(&self, remote: &str, branch: &str) -> Result<()> {
+        validate_ref_name(remote)?;
+        validate_ref_name(branch)?;
         self.run_checked(&["push", "-u", remote, branch]).await?;
         Ok(())
     }
 
     pub async fn diff_stat(&self, base: &str) -> Result<String> {
+        validate_ref_name(base)?;
         let output = self.run(&["diff", "--stat", base]).await?;
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
@@ -133,8 +160,13 @@ impl GitRunner {
             }
         }
 
-        // Created files: show full content as new file diff
+        // Created files: show full content as new file diff (with path validation)
         for file in files_created {
+            if crate::agent::multi::core::validate_workspace_path(file, &self.working_dir).is_none()
+            {
+                warn!(file = %file, "Skipping created file with invalid path");
+                continue;
+            }
             let path = self.working_dir.join(file);
             match tokio::fs::read_to_string(&path).await {
                 Ok(content) => {
@@ -175,6 +207,7 @@ impl GitRunner {
     }
 
     pub async fn log(&self, base: &str, limit: usize) -> Result<String> {
+        validate_ref_name(base)?;
         let output = self
             .run(&[
                 "log",
@@ -187,6 +220,7 @@ impl GitRunner {
     }
 
     pub async fn branch_exists(&self, branch: &str) -> Result<bool> {
+        validate_ref_name(branch)?;
         let output = self
             .run(&["rev-parse", "--verify", &format!("refs/heads/{}", branch)])
             .await?;
@@ -194,11 +228,13 @@ impl GitRunner {
     }
 
     pub async fn delete_branch(&self, branch: &str) -> Result<bool> {
+        validate_ref_name(branch)?;
         let output = self.run(&["branch", "-D", branch]).await?;
         Ok(output.status.success())
     }
 
     pub async fn list_branches_with_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        validate_ref_name(prefix)?;
         let output = self
             .run(&["branch", "--list", &format!("{}*", prefix)])
             .await?;
@@ -211,6 +247,8 @@ impl GitRunner {
     }
 
     pub async fn worktree_add(&self, path: &Path, branch: &str, base: &str) -> Result<()> {
+        validate_ref_name(branch)?;
+        validate_ref_name(base)?;
         let path_str = path
             .to_str()
             .ok_or_else(|| PilotError::Other("Invalid path encoding".into()))?;
@@ -224,10 +262,11 @@ impl GitRunner {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(PilotError::Worktree {
+            return Err(GitError::Worktree {
                 message: stderr.to_string(),
                 path: path.to_path_buf(),
-            });
+            }
+            .into());
         }
 
         Ok(())
@@ -244,10 +283,11 @@ impl GitRunner {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(PilotError::Worktree {
+            return Err(GitError::Worktree {
                 message: stderr.to_string(),
                 path: path.to_path_buf(),
-            });
+            }
+            .into());
         }
 
         Ok(())
@@ -293,5 +333,48 @@ impl GhRunner {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_ref_rejects_option_prefix() {
+        assert!(validate_ref_name("--exec=malicious").is_err());
+        assert!(validate_ref_name("-c").is_err());
+    }
+
+    #[test]
+    fn validate_ref_rejects_empty() {
+        assert!(validate_ref_name("").is_err());
+    }
+
+    #[test]
+    fn validate_ref_rejects_control_chars() {
+        assert!(validate_ref_name("branch\0name").is_err());
+        assert!(validate_ref_name("branch\nname").is_err());
+        assert!(validate_ref_name("branch\rname").is_err());
+    }
+
+    #[test]
+    fn validate_ref_rejects_whitespace_only() {
+        assert!(validate_ref_name("  ").is_err());
+        assert!(validate_ref_name("\t").is_err());
+    }
+
+    #[test]
+    fn validate_ref_rejects_dotdot_traversal() {
+        assert!(validate_ref_name("main..HEAD").is_err());
+        assert!(validate_ref_name("../escape").is_err());
+    }
+
+    #[test]
+    fn validate_ref_accepts_normal() {
+        assert!(validate_ref_name("feature/my-branch").is_ok());
+        assert!(validate_ref_name("main").is_ok());
+        assert!(validate_ref_name("v1.0.0").is_ok());
+        assert!(validate_ref_name("fix/issue-123").is_ok());
     }
 }

@@ -90,32 +90,33 @@ impl ModelConfig {
     }
 }
 
-impl Default for ModelConfig {
-    fn default() -> Self {
-        // Use cached config if available
+impl ModelConfig {
+    /// Try to create a default ModelConfig, returning None if no model can be resolved.
+    pub fn try_default() -> Option<Self> {
         if let Some(config) = DEFAULT_MODEL_CONFIG.get().and_then(|c| c.clone()) {
-            return config;
+            return Some(config);
         }
 
-        // Try to resolve the default model
         match Self::from_name_or_default(DEFAULT_MODEL) {
             Ok(config) => {
                 let _ = DEFAULT_MODEL_CONFIG.set(Some(config.clone()));
-                config
+                Some(config)
             }
             Err(e) => {
-                // Log warning and cache the failure
                 warn!(
                     error = %e,
                     "Model registry unavailable, using fallback context window"
                 );
                 let _ = DEFAULT_MODEL_CONFIG.set(None);
 
-                // Return a minimal config that allows the application to continue
-                // Operations requiring model details will fail, but basic functionality works
-                Self::from_name("sonnet")
-                    .or_else(|| Self::from_name("claude-3-5-sonnet-20240620"))
-                    .expect("At least one fallback model should exist in registry")
+                let fallback = Self::from_name("sonnet")
+                    .or_else(|| Self::from_name("claude-3-5-sonnet-20240620"));
+
+                if fallback.is_none() {
+                    warn!("No fallback model found in registry");
+                }
+
+                fallback
             }
         }
     }
@@ -146,7 +147,7 @@ mod tests {
 
     #[test]
     fn test_default_model_has_valid_context() {
-        let config = ModelConfig::default();
+        let config = ModelConfig::try_default().expect("should resolve a model");
         assert!(config.context_window() >= 200_000);
         assert!(config.max_output_tokens() > 0);
         assert!(config.usable_context() > 0);
@@ -178,7 +179,7 @@ mod tests {
 
     #[test]
     fn test_usable_context_is_context_minus_output() {
-        let config = ModelConfig::default();
+        let config = ModelConfig::try_default().expect("should resolve a model");
         assert_eq!(
             config.usable_context(),
             config.context_window() - config.max_output_tokens()

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::agent::multi::core::ExecutionOutcome;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
@@ -11,6 +13,7 @@ pub enum TaskStatus {
     Completed,
     Failed,
     Skipped,
+    Deferred,
 }
 
 impl TaskStatus {
@@ -20,6 +23,16 @@ impl TaskStatus {
 
     pub fn is_active(&self) -> bool {
         matches!(self, Self::InProgress | Self::Verifying)
+    }
+}
+
+impl From<ExecutionOutcome> for TaskStatus {
+    fn from(outcome: ExecutionOutcome) -> Self {
+        match outcome {
+            ExecutionOutcome::Completed => Self::Completed,
+            ExecutionOutcome::Failed => Self::Failed,
+            ExecutionOutcome::Deferred => Self::Deferred,
+        }
     }
 }
 
@@ -33,6 +46,7 @@ impl std::fmt::Display for TaskStatus {
             Self::Completed => "Completed",
             Self::Failed => "Failed",
             Self::Skipped => "Skipped",
+            Self::Deferred => "Deferred",
         };
         write!(f, "{}", s)
     }

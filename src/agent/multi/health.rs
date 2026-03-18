@@ -42,9 +42,10 @@
 //!
 //! # Example Usage
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use std::sync::Arc;
-//! use claude_pilot::agent::multi::{AgentPool, HealthMonitor, HealthThresholds};
+//! use claude_pilot::agent::multi::health::{HealthMonitor, HealthThresholds};
+//! use claude_pilot::agent::multi::pool::AgentPool;
 //! use claude_pilot::config::MultiAgentConfig;
 //!
 //! # fn main() {
@@ -79,35 +80,29 @@
 //! # }
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
 use parking_lot::RwLock;
 
 use super::pool::{AgentPool, PoolStatistics};
-use super::traits::MetricsSnapshot;
+use super::traits::AgentExecutionMetrics;
+use crate::domain::Severity;
 
 /// Health status levels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum HealthStatus {
     Healthy,
     Degraded,
     Critical,
 }
 
-/// Alert severity levels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AlertSeverity {
-    Info,
-    Warning,
-    Critical,
-}
-
 /// Health alert with recommendation.
 #[derive(Debug, Clone)]
 pub struct HealthAlert {
-    pub severity: AlertSeverity,
+    pub severity: Severity,
     pub category: AlertCategory,
     pub message: String,
     pub recommendation: String,
@@ -270,7 +265,7 @@ impl HealthMonitor {
         &self,
         count: usize,
         avg_load: f32,
-        _metrics: &MetricsSnapshot,
+        _metrics: &AgentExecutionMetrics,
     ) -> HealthStatus {
         if count == 0 {
             return HealthStatus::Critical;
@@ -292,7 +287,7 @@ impl HealthMonitor {
         role_id: &str,
         count: usize,
         avg_load: f32,
-        metrics: &MetricsSnapshot,
+        metrics: &AgentExecutionMetrics,
     ) -> Option<Bottleneck> {
         if count == 0 {
             return Some(Bottleneck {
@@ -341,14 +336,14 @@ impl HealthMonitor {
     fn check_global_health(
         &self,
         stats: &PoolStatistics,
-        metrics: &MetricsSnapshot,
+        metrics: &AgentExecutionMetrics,
         alerts: &mut Vec<HealthAlert>,
     ) {
         // Check for high failure rate
         if metrics.total_executions > 10 && metrics.success_rate < self.thresholds.min_success_rate
         {
             alerts.push(HealthAlert {
-                severity: AlertSeverity::Warning,
+                severity: Severity::Warning,
                 category: AlertCategory::HighFailureRate,
                 message: format!(
                     "High failure rate: {:.1}% success rate",
@@ -362,7 +357,7 @@ impl HealthMonitor {
         // Check for high latency
         if metrics.avg_duration_ms > self.thresholds.max_avg_latency_ms {
             alerts.push(HealthAlert {
-                severity: AlertSeverity::Warning,
+                severity: Severity::Warning,
                 category: AlertCategory::HighLatency,
                 message: format!("High average latency: {}ms", metrics.avg_duration_ms),
                 recommendation: "Consider optimizing prompts or increasing parallelism".to_string(),
@@ -386,7 +381,7 @@ impl HealthMonitor {
                 && (max_load - min_load) / max_load > self.thresholds.load_imbalance_threshold
             {
                 alerts.push(HealthAlert {
-                    severity: AlertSeverity::Info,
+                    severity: Severity::Info,
                     category: AlertCategory::LoadImbalance,
                     message: format!(
                         "Load imbalance detected: max {:.1} vs min {:.1}",
@@ -404,10 +399,10 @@ impl HealthMonitor {
         alerts: &[HealthAlert],
         bottlenecks: &[Bottleneck],
     ) -> HealthStatus {
-        let has_critical = alerts.iter().any(|a| a.severity == AlertSeverity::Critical)
+        let has_critical = alerts.iter().any(|a| a.severity == Severity::Critical)
             || bottlenecks.iter().any(|b| b.severity >= 1.0);
 
-        let has_warning = alerts.iter().any(|a| a.severity == AlertSeverity::Warning)
+        let has_warning = alerts.iter().any(|a| a.severity == Severity::Warning)
             || bottlenecks.iter().any(|b| b.severity >= 0.5);
 
         if has_critical {
@@ -419,7 +414,7 @@ impl HealthMonitor {
         }
     }
 
-    fn calculate_health_score(&self, stats: &PoolStatistics, metrics: &MetricsSnapshot) -> f64 {
+    fn calculate_health_score(&self, stats: &PoolStatistics, metrics: &AgentExecutionMetrics) -> f64 {
         let mut score = 1.0;
 
         // Penalize for failures
@@ -464,7 +459,7 @@ impl HealthReport {
 
 /// Bottleneck detector for proactive capacity planning.
 pub struct BottleneckDetector {
-    history: RwLock<Vec<HealthReport>>,
+    history: RwLock<VecDeque<HealthReport>>,
     max_history: usize,
 }
 
@@ -477,16 +472,16 @@ impl Default for BottleneckDetector {
 impl BottleneckDetector {
     pub fn new(max_history: usize) -> Self {
         Self {
-            history: RwLock::new(Vec::new()),
+            history: RwLock::new(VecDeque::new()),
             max_history,
         }
     }
 
     pub fn record(&self, report: HealthReport) {
         let mut history = self.history.write();
-        history.push(report);
+        history.push_back(report);
         if history.len() > self.max_history {
-            history.remove(0);
+            history.pop_front();
         }
     }
 

@@ -10,10 +10,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::notification::Notification;
-use super::orchestration::OrchestrationSession;
 use super::participant::ParticipantSummary;
 use super::task_graph::{TaskInfo, TaskNode};
-use crate::agent::multi::AgentId;
 
 /// Context provided to an agent for a single invocation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,7 +148,7 @@ impl AgentContext {
     }
 
     /// Format context for injection into agent prompt.
-    pub fn format_for_prompt(&self) -> String {
+    pub fn format_for_llm(&self) -> String {
         let mut output = String::new();
 
         // Session info
@@ -424,74 +422,6 @@ impl TaskSummary {
     }
 }
 
-/// Builder for creating AgentContext from OrchestrationSession.
-pub struct AgentContextBuilder<'a> {
-    session: &'a OrchestrationSession,
-    agent_id: AgentId,
-    task_id: Option<String>,
-    max_notifications: usize,
-    include_all_participants: bool,
-    include_related_tasks: bool,
-}
-
-impl<'a> AgentContextBuilder<'a> {
-    pub fn new(session: &'a OrchestrationSession, agent_id: AgentId) -> Self {
-        Self {
-            session,
-            agent_id,
-            task_id: None,
-            max_notifications: 20,
-            include_all_participants: true,
-            include_related_tasks: true,
-        }
-    }
-
-    pub fn with_task(mut self, task_id: &str) -> Self {
-        self.task_id = Some(task_id.to_string());
-        self
-    }
-
-    pub fn with_max_notifications(mut self, max: usize) -> Self {
-        self.max_notifications = max;
-        self
-    }
-
-    pub fn without_all_participants(mut self) -> Self {
-        self.include_all_participants = false;
-        self
-    }
-
-    pub fn without_related_tasks(mut self) -> Self {
-        self.include_related_tasks = false;
-        self
-    }
-
-    pub fn build(self) -> AgentContext {
-        let mut ctx = AgentContext::new(self.agent_id.as_str(), &self.session.id)
-            .with_phase(self.session.phase().as_str())
-            .with_working_dir(self.session.working_dir().clone());
-
-        // Add participants
-        if self.include_all_participants {
-            ctx = ctx.with_participants(self.session.participant_summaries());
-        }
-
-        // Add notifications
-        let notifications: Vec<NotificationSummary> = self
-            .session
-            .notifications_for_agent(&self.agent_id, self.max_notifications)
-            .iter()
-            .map(|n| NotificationSummary::from_notification(n, self.agent_id.as_str()))
-            .collect();
-        ctx = ctx.with_notifications(notifications);
-
-        // Add task if specified
-        // (Task lookup would be done here if we had access to TaskDAG methods)
-
-        ctx
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_for_prompt() {
+    fn test_format_for_llm() {
         let ctx = AgentContext::new("agent-1", "session-1")
             .with_phase("implementation")
             .with_participants(vec![ParticipantSummary {
@@ -531,7 +461,7 @@ mod tests {
                 instructions: None,
             });
 
-        let prompt = ctx.format_for_prompt();
+        let prompt = ctx.format_for_llm();
 
         assert!(prompt.contains("session-1"));
         assert!(prompt.contains("implementation"));

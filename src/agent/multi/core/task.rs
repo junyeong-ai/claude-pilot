@@ -61,7 +61,7 @@ pub struct TaskContext {
     #[serde(default)]
     pub related_files: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub composed_prompt: Option<String>,
+    pub manifest_context: Option<String>,
 }
 
 impl TaskContext {

@@ -9,8 +9,9 @@ use tracing::{debug, info, warn};
 
 use crate::config::{AgentConfig, ModelAgentType};
 use crate::error::{PilotError, Result};
+use crate::domain::Severity;
 use crate::quality::{
-    CoherenceCheckType, CoherenceConfig, CoherenceIssue, CoherenceResult, FileChange, Severity,
+    CoherenceCheckType, CoherenceConfig, CoherenceIssue, CoherenceResult, QualityFileChange,
 };
 use crate::symora::SymoraClient;
 
@@ -140,7 +141,7 @@ impl CoherenceChecker {
                         ),
                         task_a: task_list.first().cloned(),
                         task_b: task_list.get(1).cloned(),
-                        severity: Severity::Major,
+                        severity: Severity::Error,
                         suggested_resolution: Some(format!(
                             "Consolidate '{}' definition or ensure tasks coordinate",
                             symbol
@@ -170,7 +171,7 @@ impl CoherenceChecker {
                                 ),
                                 task_a: Some(result.task_id.clone()),
                                 task_b: None,
-                                severity: Severity::Major,
+                                severity: Severity::Error,
                                 suggested_resolution: diag.suggestions.first().cloned(),
                             });
                             affected_tasks.push(result.task_id.clone());
@@ -205,7 +206,7 @@ impl CoherenceChecker {
                         ),
                         task_a: tasks.first().cloned(),
                         task_b: tasks.get(1).cloned(),
-                        severity: Severity::Minor,
+                        severity: Severity::Warning,
                         suggested_resolution: Some("Review changes for compatibility".to_string()),
                     });
                     affected_tasks.extend(tasks.clone());
@@ -225,7 +226,7 @@ impl CoherenceChecker {
                 .count();
             let major_count = issues
                 .iter()
-                .filter(|i| matches!(i.severity, Severity::Major))
+                .filter(|i| matches!(i.severity, Severity::Error))
                 .count();
             let critical_weight = self.config.thresholds.critical_severity_weight;
             let major_weight = self.config.thresholds.major_severity_weight;
@@ -283,7 +284,7 @@ impl CoherenceChecker {
                     ),
                     task_a: tasks.first().cloned(),
                     task_b: tasks.last().cloned(),
-                    severity: Severity::Minor,
+                    severity: Severity::Warning,
                     suggested_resolution: Some(
                         "Consider refactoring to reduce coupling between tasks".to_string(),
                     ),
@@ -300,7 +301,7 @@ impl CoherenceChecker {
         } else {
             let major_count = issues
                 .iter()
-                .filter(|i| matches!(i.severity, Severity::Major | Severity::Critical))
+                .filter(|i| matches!(i.severity, Severity::Error | Severity::Critical))
                 .count();
             1.0 - (major_count as f32 * 0.2).min(1.0)
         };
@@ -358,7 +359,7 @@ impl CoherenceChecker {
                 description: format!("Requirement not semantically fulfilled: {}", req),
                 task_a: None,
                 task_b: None,
-                severity: Severity::Major,
+                severity: Severity::Error,
                 suggested_resolution: Some(format!("Add or modify a task to address: {}", req)),
             });
         }
@@ -528,7 +529,7 @@ struct FulfillmentItem {
 pub struct CoherenceTaskResult {
     pub task_id: String,
     pub description: String,
-    pub file_changes: Vec<FileChange>,
+    pub file_changes: Vec<QualityFileChange>,
     pub success: bool,
 }
 
@@ -542,7 +543,7 @@ impl CoherenceTaskResult {
         }
     }
 
-    pub fn with_file_changes(mut self, changes: Vec<FileChange>) -> Self {
+    pub fn with_file_changes(mut self, changes: Vec<QualityFileChange>) -> Self {
         self.file_changes = changes;
         self
     }

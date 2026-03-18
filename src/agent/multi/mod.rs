@@ -5,7 +5,7 @@
 //! This module provides the multi-agent system for collaborative task execution:
 //! - Module-based agents with scope enforcement using modmap::Module
 //! - Consensus engine for multi-round planning and agreement
-//! - Layered context composition (Module → Rules → Skills)
+//! - Manifest-driven context injection from Workspace data
 //!
 //! # Agent Types
 //!
@@ -31,10 +31,8 @@
 //! - [`architecture`] - Runtime boundary enforcement
 //! - [`reviewer`] - Code review and quality assessment
 //!
-//! ## Context Composition
-//! - [`context`] - Combines modules, rules, skills, and personas
-//! - [`rules`] - Domain knowledge (WHAT) - auto-injected by context
-//! - [`skills`] - Task methodology (HOW) - explicitly invoked
+//! ## Context
+//! - [`context`] - Module-based context building from modmap::Module + manifest data
 //!
 //! ## Supporting Systems
 //! - [`health`] - Health monitoring and bottleneck detection
@@ -46,9 +44,8 @@
 //! # Architecture
 //!
 //! ```text
-//! Rules  = WHAT (domain knowledge) → Auto-inject by context
-//! Skills = HOW  (task methodology) → Explicit invoke
-//! Agents = WHO  (role/composition) → Task assignment
+//! Manifest = WHAT (project structure/facts) → Auto-inject from Workspace
+//! Agents   = WHO  (role/composition)        → Task assignment
 //! ```
 
 // Private modules: types exported via `pub use` for controlled API surface
@@ -84,138 +81,55 @@ pub mod messaging;
 pub mod metrics;
 pub mod ownership;
 pub mod reviewer;
-pub mod rules;
+pub mod scope;
 pub mod session;
-pub mod skills;
 pub mod workspace_registry;
 
-// Core Types (from traits.rs which re-exports from core/shared)
-pub use traits::{
-    AgentCore, AgentId, AgentMetrics, AgentPromptBuilder, AgentRole, AgentTask, AgentTaskResult,
-    ArtifactType, BoxedAgent, ConvergenceResult, LoadGuard, LoadTracker, MetricsSnapshot,
-    PermissionProfile, RoleCategory, SpecializedAgent, TaskArtifact, TaskContext, TaskPriority,
-    TaskStatus, VerificationVerdict, calculate_priority_score, extract_field, extract_file_path,
-    extract_files_from_output,
+// Shared types - canonical re-exports
+pub use shared::{AgentId, RoleCategory, TaskPriority};
+// Core types - externally used subset
+pub use core::{
+    AgentRole, AgentTask, SpecializedAgent, TaskContext,
 };
+// Core Types - internal only (AgentExecutionMetrics used by orchestrator/engine.rs via agent::)
+pub(crate) use core::AgentExecutionMetrics;
 
-// Agents
+// Agents - externally used
 pub use architect::ArchitectAgent;
-pub use architecture::{
-    ArchitectureAgent, ArchitectureValidation, ArchitectureViolation, ChangeType, FileChange,
-    ViolationSeverity, ViolationType,
-};
 pub use coder::CoderAgent;
-pub use module_agent::{ModuleAgent, ScopeValidation};
+pub use module_agent::ModuleAgent;
 pub use planning::PlanningAgent;
 pub use research::ResearchAgent;
-pub use reviewer::{
-    IssueSeverity, ProjectReviewContext, ReviewConvention, ReviewIssue, ReviewKnownIssue,
-    ReviewerAgent,
-};
+pub use reviewer::ReviewerAgent;
 pub use verifier::VerifierAgent;
 
-// Coordination
-pub use coordinator::{ComplexityMetrics, Coordinator, HumanDecisionRequest, MissionResult};
-pub use pool::{AgentPool, AgentPoolBuilder, AgentScore, PoolStatistics, RoleStats};
+// Coordination - externally used
+pub use coordinator::Coordinator;
+pub use pool::AgentPoolBuilder;
+// Coordination - internal re-exports for sibling modules
+pub(crate) use pool::AgentPool;
+// Consensus - externally used
+pub use consensus::{ConsensusEngine, ConsensusResult, TaskComplexity};
 
-// Consensus
-pub use consensus::{
-    AgentPerformanceHistory, AgentProposal, AgentRequest, Conflict, ConflictResolution,
-    ConflictSeverity, ConsensusEngine, ConsensusResult, ConsensusRound, ConsensusStatus,
-    ConsensusSynthesisOutput, ConsensusTask, ProposalScore, ResolutionStrategy, ScoredProposal,
-    TaskComplexity,
-};
-pub use escalation::{
-    AttemptedResolution, ConflictContext, EscalationConfig, EscalationEngine, EscalationHistory,
-    EscalationLevel, EscalationOption, EscalationStrategy,
-};
 
-// Context Composition
-pub use context::{
-    AgentPersona, ComposedContext, ConsensusRole, ContextComposer, ModuleContext,
-    ModuleContextBuilder, PersonaLoader,
-};
-pub use rules::{
-    InjectionConfig, ResolvedRules, Rule, RuleCategory, RuleMetadata, RuleRegistry, RuleResolver,
-};
-pub use skills::{Skill, SkillComposer, SkillRegistry, SkillType};
+// Messaging - externally used
+pub use messaging::{AgentMessage, AgentMessageBus, AgentMessageType, MessagePayload};
 
-// Messaging
-pub use messaging::{
-    AgentMessage, AgentMessageBus, AgentReceiver, FilteredReceiver, MessageHandler,
-    MessageHandlerRegistry, MessagePayload, MessageType,
-};
+// Infrastructure - externally used
+pub use hierarchy::{HierarchicalAggregator, ParticipantSet};
+pub use shared::TierLevel;
 
-// Infrastructure
-pub use health::{
-    AlertCategory, AlertSeverity, Bottleneck, BottleneckDetector, BottleneckType, HealthAlert,
-    HealthMonitor, HealthReport, HealthStatus, HealthThresholds, RoleHealth, TrendAlert, TrendType,
-};
-pub use hierarchy::{
-    AgentHierarchy,
-    // Unit ID constants
-    CROSS_WORKSPACE_COORDINATOR,
-    ConsensusStrategy,
-    ConsensusTier,
-    ConsensusUnit,
-    EdgeCaseResolution,
-    HierarchicalAggregator,
-    HierarchyConfig,
-    HierarchyGroup,
-    MultiWorkspaceParticipantSelector,
-    ParticipantSelector,
-    ParticipantSet,
-    RoutingDecision,
-    RoutingTier,
-    StrategySelector,
-    TierAggregation,
-    TierLevel,
-    UNIT_CROSS_WORKSPACE,
-    UNIT_DOMAIN_PREFIX,
-    UNIT_GROUP_PREFIX,
-    UNIT_MODULE_PREFIX,
-    UNIT_WORKSPACE,
-    unit_id,
-};
-pub use ownership::{
-    AccessType, AcquisitionResult, DeferredTaskRef, FileLease, FileOwnership, FileOwnershipManager,
-    LeaseGuard, WaitingEntry, acquire_with_retry,
-};
+// Hierarchical Consensus - externally used
+pub use adaptive_consensus::AdaptiveConsensusExecutor;
 
-// Hierarchical Consensus
-pub use adaptive_consensus::{
-    AdaptiveConsensusExecutor, ConsensusMission, ConsensusOutcome, ConsensusState,
-    HierarchicalConsensusResult, SessionStatus, TierResult,
-};
+// Workspace Registry - externally used
+pub use workspace_registry::{WorkspaceInfo, WorkspaceRegistry};
 
-// Message Store (polling-based conflict resolution)
-pub use message_store::{MessageStatus, MessageStore, StoredMessage};
+// Scope - externally used
+pub use scope::{AgentScope, ScopeTier};
 
-// Conflict Resolution
-pub use conflict_resolver::{
-    ConflictAction, ConflictRequest, ConflictResolver, ConflictResponse, WaitingRequest,
-};
-
-// Workspace Registry (cross-workspace discovery)
-pub use workspace_registry::{WorkspaceInfo, WorkspaceRegistry, WorkspaceStatus};
-
-// Consensus Metrics (observability)
-pub use metrics::{
-    ConsensusMetrics, MetricsObserver, MetricsSnapshot as ConsensusMetricsSnapshot,
-    SessionSnapshot, StrategySnapshot, TierSnapshot, TierStat,
-};
-
-// Identity (unified agent identification system)
-pub use identity::{AgentIdentifier, RoleType};
-
-// Consensus Phases (two-phase direction + synthesis)
-pub use consensus_phases::{
-    DirectionSettingPhase, PeerSummaryBuilder, ProposalSummary, SynthesisContext,
-    TwoPhaseOrchestrator,
-};
-
-// Semantic Convergence (API/type conflict detection)
-pub use convergence::{CrossVisibilityContext, SemanticConvergenceChecker, SemanticProposal};
+// Identity - externally used (AgentIdentifier used by agent modules internally)
+pub use identity::AgentIdentifier;
 
 // Re-exports from modmap
 pub use modmap::{
@@ -229,6 +143,11 @@ use crate::agent::TaskAgent;
 use crate::config::MultiAgentConfig;
 use crate::error::Result;
 use crate::state::EventStore;
+
+// Local imports for functions in this module
+use architecture::BoundaryEnforcementAgent;
+use conflict_resolver::ConflictResolver;
+use message_store::MessageStore;
 
 /// Create a core agent pool with the standard agents.
 ///
@@ -286,91 +205,87 @@ pub fn create_agent_pool(
     builder.build()
 }
 
-pub struct DynamicPoolResult {
-    pub pool: AgentPool,
-}
-
 pub async fn create_dynamic_pool(
     config: MultiAgentConfig,
     task_agent: Arc<TaskAgent>,
     _working_dir: &Path,
     manifest_path: Option<&Path>,
-) -> Result<DynamicPoolResult> {
+) -> Result<(AgentPool, Option<Arc<crate::workspace::Workspace>>)> {
     use crate::workspace::Workspace;
 
     let pool = create_agent_pool(config.clone(), Arc::clone(&task_agent))?;
 
     let Some(path) = manifest_path else {
-        return Ok(DynamicPoolResult { pool });
+        return Ok((pool, None));
     };
 
-    match Workspace::from_manifest(path).await {
-        Ok(workspace) => {
-            let mut registration_errors = Vec::new();
-
-            let arch_agent = Arc::new(ArchitectureAgent::from_workspace(
-                &workspace,
-                Arc::clone(&task_agent),
-            ));
-            if let Err(e) = pool.register(arch_agent) {
-                tracing::error!(error = %e, "Failed to register architecture agent");
-                registration_errors.push(format!("Architecture agent: {}", e));
-            }
-
-            for module in workspace.modules() {
-                let module_arc = Arc::new(module.clone());
-                let module_name = module.name.clone();
-                let manifest_context = workspace.module_context(&module.id).cloned();
-
-                let agent: Arc<ModuleAgent> = if let Some(ctx) = manifest_context {
-                    Arc::new(ModuleAgent::with_manifest_context(
-                        module_arc,
-                        ctx,
-                        Arc::clone(&task_agent),
-                    ))
-                } else {
-                    Arc::new(ModuleAgent::new(module_arc, Arc::clone(&task_agent)))
-                };
-
-                if let Err(e) = pool.register(agent) {
-                    tracing::error!(module = %module_name, error = %e, "Failed to register module agent");
-                    registration_errors.push(format!("Module agent '{}': {}", module_name, e));
-                }
-            }
-
-            let review_context = reviewer::ProjectReviewContext::from_workspace(&workspace);
-            let mut reviewer = ReviewerAgent::new("reviewer-0", Arc::clone(&task_agent));
-            reviewer.set_context(review_context);
-            if let Err(e) = pool.register(Arc::new(reviewer)) {
-                tracing::error!(error = %e, "Failed to register reviewer agent");
-                registration_errors.push(format!("Reviewer agent: {}", e));
-            }
-
-            let architect = ArchitectAgent::with_id("architect-0", Arc::clone(&task_agent));
-            if let Err(e) = pool.register(architect) {
-                tracing::error!(error = %e, "Failed to register architect agent");
-                registration_errors.push(format!("Architect agent: {}", e));
-            }
-
-            if registration_errors.is_empty() {
-                tracing::info!(
-                    module_agents = workspace.modules().len(),
-                    "Successfully registered all dynamic agents"
-                );
-            } else {
-                tracing::error!(
-                    count = registration_errors.len(),
-                    "Dynamic agent registration encountered {} error(s)",
-                    registration_errors.len()
-                );
-            }
-        }
+    let workspace = match Workspace::from_manifest(path).await {
+        Ok(ws) => ws,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to load workspace from manifest");
+            return Ok((pool, None));
+        }
+    };
+
+    let mut registration_errors = Vec::new();
+
+    let arch_agent = Arc::new(BoundaryEnforcementAgent::from_workspace(
+        &workspace,
+        Arc::clone(&task_agent),
+    ));
+    if let Err(e) = pool.register(arch_agent) {
+        tracing::error!(error = %e, "Failed to register architecture agent");
+        registration_errors.push(format!("Architecture agent: {}", e));
+    }
+
+    for module in workspace.modules() {
+        let module_arc = Arc::new(module.clone());
+        let module_name = module.name.clone();
+        let manifest_context = workspace.module_context(&module.id).cloned();
+
+        let agent: Arc<ModuleAgent> = if let Some(ctx) = manifest_context {
+            Arc::new(ModuleAgent::with_manifest_context(
+                module_arc,
+                ctx,
+                Arc::clone(&task_agent),
+            ))
+        } else {
+            Arc::new(ModuleAgent::new(module_arc, Arc::clone(&task_agent)))
+        };
+
+        if let Err(e) = pool.register(agent) {
+            tracing::error!(module = %module_name, error = %e, "Failed to register module agent");
+            registration_errors.push(format!("Module agent '{}': {}", module_name, e));
         }
     }
 
-    Ok(DynamicPoolResult { pool })
+    let reviewer = ReviewerAgent::new("reviewer-0", Arc::clone(&task_agent));
+    if let Err(e) = pool.register(Arc::new(reviewer)) {
+        tracing::error!(error = %e, "Failed to register reviewer agent");
+        registration_errors.push(format!("Reviewer agent: {}", e));
+    }
+
+    let architect = ArchitectAgent::with_id("architect-0", Arc::clone(&task_agent));
+    if let Err(e) = pool.register(architect) {
+        tracing::error!(error = %e, "Failed to register architect agent");
+        registration_errors.push(format!("Architect agent: {}", e));
+    }
+
+    if registration_errors.is_empty() {
+        tracing::info!(
+            module_agents = workspace.modules().len(),
+            "Successfully registered all dynamic agents"
+        );
+    } else {
+        tracing::error!(
+            count = registration_errors.len(),
+            "Dynamic agent registration encountered {} error(s)",
+            registration_errors.len()
+        );
+    }
+
+    let workspace = Arc::new(workspace);
+    Ok((pool, Some(workspace)))
 }
 
 /// Create a coordinator with consensus engine for dynamic mode.
@@ -412,19 +327,20 @@ pub async fn create_coordinator(
     event_store: Option<Arc<EventStore>>,
     manifest_path: Option<&Path>,
 ) -> Result<Coordinator> {
-    use crate::workspace::Workspace;
-
-    let pool = if config.dynamic_mode {
-        let result = create_dynamic_pool(
+    let (pool, workspace) = if config.dynamic_mode {
+        let (pool, ws) = create_dynamic_pool(
             config.clone(),
             Arc::clone(&task_agent),
             working_dir,
             manifest_path,
         )
         .await?;
-        Arc::new(result.pool)
+        (Arc::new(pool), ws)
     } else {
-        Arc::new(create_agent_pool(config.clone(), Arc::clone(&task_agent))?)
+        (
+            Arc::new(create_agent_pool(config.clone(), Arc::clone(&task_agent))?),
+            None,
+        )
     };
 
     let mut coordinator = Coordinator::new(config.clone(), pool)
@@ -448,14 +364,29 @@ pub async fn create_coordinator(
 
         coordinator = coordinator.with_adaptive_executor(adaptive_executor);
 
-        if let Some(path) = manifest_path {
-            match Workspace::from_manifest(path).await {
-                Ok(ws) => {
-                    coordinator = coordinator.with_workspace(Arc::new(ws));
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to load workspace from manifest");
-                }
+        if let Some(ws) = workspace {
+            coordinator = coordinator.with_workspace(ws);
+        }
+
+        let mut two_phase = consensus_phases::TwoPhaseOrchestrator::new(Arc::clone(&task_agent));
+        two_phase = two_phase.with_workspace_registry(Arc::clone(&coordinator.workspace_registry));
+        coordinator = coordinator.with_two_phase_orchestrator(two_phase);
+
+        // Wire ConflictResolver for P2P ownership negotiation
+        let messages_db = working_dir.join(".pilot").join("messages.db");
+        match MessageStore::new(&messages_db) {
+            Ok(msg_store) => {
+                let resolver = ConflictResolver::new(
+                    Arc::clone(&coordinator.ownership_manager),
+                    Arc::new(msg_store),
+                );
+                coordinator = coordinator.with_conflict_resolver(Arc::new(resolver));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "P2P conflict resolution disabled: MessageStore initialization failed"
+                );
             }
         }
     }

@@ -5,14 +5,14 @@ use serde::{Deserialize, Serialize};
 /// Status indicating task execution outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TaskStatus {
+pub enum ExecutionOutcome {
     #[default]
     Completed,
     Failed,
     Deferred,
 }
 
-impl TaskStatus {
+impl ExecutionOutcome {
     pub fn is_deferred(&self) -> bool {
         matches!(self, Self::Deferred)
     }
@@ -22,48 +22,48 @@ impl TaskStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTaskResult {
     pub task_id: String,
-    pub success: bool,
     pub output: String,
     #[serde(default)]
     pub findings: Vec<String>,
     #[serde(default)]
     pub artifacts: Vec<TaskArtifact>,
     #[serde(default)]
-    pub status: TaskStatus,
+    pub status: ExecutionOutcome,
 }
 
 impl AgentTaskResult {
     pub fn success(task_id: impl Into<String>, output: impl Into<String>) -> Self {
         Self {
             task_id: task_id.into(),
-            success: true,
             output: output.into(),
             findings: vec![],
             artifacts: vec![],
-            status: TaskStatus::Completed,
+            status: ExecutionOutcome::Completed,
         }
     }
 
     pub fn failure(task_id: impl Into<String>, output: impl Into<String>) -> Self {
         Self {
             task_id: task_id.into(),
-            success: false,
             output: output.into(),
             findings: vec![],
             artifacts: vec![],
-            status: TaskStatus::Failed,
+            status: ExecutionOutcome::Failed,
         }
     }
 
     pub fn deferred(task_id: impl Into<String>, output: impl Into<String>) -> Self {
         Self {
             task_id: task_id.into(),
-            success: false,
             output: output.into(),
             findings: vec![],
             artifacts: vec![],
-            status: TaskStatus::Deferred,
+            status: ExecutionOutcome::Deferred,
         }
+    }
+
+    pub fn is_success(&self) -> bool {
+        self.status == ExecutionOutcome::Completed
     }
 
     pub fn with_findings(mut self, findings: Vec<String>) -> Self {
@@ -130,7 +130,7 @@ pub enum ArtifactType {
 
 /// Result of convergent verification (2-pass requirement).
 #[derive(Debug, Clone)]
-pub struct ConvergenceResult {
+pub struct AgentConvergenceResult {
     pub converged: bool,
     pub clean_rounds: usize,
     pub total_rounds: usize,
@@ -139,7 +139,7 @@ pub struct ConvergenceResult {
     pub final_verdict: VerificationVerdict,
 }
 
-impl ConvergenceResult {
+impl AgentConvergenceResult {
     pub fn passed(clean_rounds: usize, total_rounds: usize) -> Self {
         Self {
             converged: true,
@@ -189,19 +189,19 @@ mod tests {
     #[test]
     fn test_agent_task_result_builders() {
         let success = AgentTaskResult::success("task-1", "Done");
-        assert!(success.success);
+        assert!(success.is_success());
         assert_eq!(success.task_id, "task-1");
-        assert_eq!(success.status, TaskStatus::Completed);
+        assert_eq!(success.status, ExecutionOutcome::Completed);
         assert!(!success.is_deferred());
 
         let failure = AgentTaskResult::failure("task-2", "Error");
-        assert!(!failure.success);
-        assert_eq!(failure.status, TaskStatus::Failed);
+        assert!(!failure.is_success());
+        assert_eq!(failure.status, ExecutionOutcome::Failed);
         assert!(!failure.is_deferred());
 
         let deferred = AgentTaskResult::deferred("task-3", "Yielded to other agent");
-        assert!(!deferred.success);
-        assert_eq!(deferred.status, TaskStatus::Deferred);
+        assert!(!deferred.is_success());
+        assert_eq!(deferred.status, ExecutionOutcome::Deferred);
         assert!(deferred.is_deferred());
     }
 
@@ -216,11 +216,11 @@ mod tests {
 
     #[test]
     fn test_convergence_result() {
-        let passed = ConvergenceResult::passed(2, 3);
+        let passed = AgentConvergenceResult::passed(2, 3);
         assert!(passed.converged);
         assert_eq!(passed.final_verdict, VerificationVerdict::Passed);
 
-        let failed = ConvergenceResult::failed(5, vec!["issue1".to_string()]);
+        let failed = AgentConvergenceResult::failed(5, vec!["issue1".to_string()]);
         assert!(!failed.converged);
         assert_eq!(failed.final_verdict, VerificationVerdict::Failed);
     }

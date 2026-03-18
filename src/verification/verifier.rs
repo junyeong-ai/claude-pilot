@@ -86,7 +86,28 @@ impl Verifier {
         if patterns.is_empty() {
             return base_cmd.to_string();
         }
-        let filter = patterns.join("|");
+        // Sanitize patterns: reject any containing shell injection characters.
+        // Patterns come from task config, not direct user input, but defense-in-depth.
+        const SHELL_META: &[char] = &[';', '&', '`', '$', '\n', '\r'];
+        let safe_patterns: Vec<&String> = patterns
+            .iter()
+            .filter(|p| {
+                if p.chars().any(|c| SHELL_META.contains(&c)) {
+                    warn!(pattern = %p, "Skipping test pattern with shell metacharacters");
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect();
+        if safe_patterns.is_empty() {
+            return base_cmd.to_string();
+        }
+        let filter = safe_patterns
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("|");
         match filter_format {
             Some(fmt) => format!("{} {}", base_cmd, fmt.replace("{}", &filter)),
             None => {
@@ -355,5 +376,134 @@ impl Verifier {
         let verification = Verification::new(checks);
         info!(passed = verification.passed, summary = %verification.summary, "Task-scoped verification complete");
         verification
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn default_config() -> VerificationConfig {
+        VerificationConfig {
+            require_verification_commands: false,
+            ..Default::default()
+        }
+    }
+
+    fn config_requiring_commands() -> VerificationConfig {
+        VerificationConfig {
+            require_verification_commands: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_build_test_command_no_patterns() {
+        let verifier = Verifier::new(default_config());
+        let result = verifier.build_test_command("cargo test", &[], None);
+        assert_eq!(result, "cargo test");
+    }
+
+    #[test]
+    fn test_build_test_command_with_patterns_and_format() {
+        let verifier = Verifier::new(default_config());
+        let patterns = vec!["test_foo".to_string(), "test_bar".to_string()];
+        let format = "-- --filter {}".to_string();
+        let result = verifier.build_test_command("cargo test", &patterns, Some(&format));
+        assert_eq!(result, "cargo test -- --filter test_foo|test_bar");
+    }
+
+    #[test]
+    fn test_build_test_command_patterns_without_format_ignored() {
+        let verifier = Verifier::new(default_config());
+        let patterns = vec!["test_foo".to_string()];
+        let result = verifier.build_test_command("cargo test", &patterns, None);
+        assert_eq!(result, "cargo test");
+    }
+
+    #[test]
+    fn test_build_test_command_format_placeholder_replacement() {
+        let verifier = Verifier::new(default_config());
+        let patterns = vec!["my_test".to_string()];
+        let format = "-k {}".to_string();
+        let result = verifier.build_test_command("pytest", &patterns, Some(&format));
+        assert_eq!(result, "pytest -k my_test");
+    }
+
+    #[test]
+    fn test_build_test_command_multiple_patterns_joined() {
+        let verifier = Verifier::new(default_config());
+        let patterns = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let format = "{}".to_string();
+        let result = verifier.build_test_command("cargo test", &patterns, Some(&format));
+        assert_eq!(result, "cargo test a|b|c");
+    }
+
+    #[test]
+    fn test_verifier_construction() {
+        let config = default_config();
+        let timeout = config.command_timeout_secs;
+        let verifier = Verifier::new(config);
+        assert_eq!(verifier.config.command_timeout_secs, timeout);
+    }
+
+    #[tokio::test]
+    async fn test_verify_task_file_created_exists() {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(temp.path().join("new_file.rs"), "// content").unwrap();
+
+        let verifier = Verifier::new(default_config());
+        let task = Task::new("t1", "Create file");
+        let result = TaskResult {
+            success: true,
+            output: String::new(),
+            files_created: vec!["new_file.rs".into()],
+            files_modified: vec![],
+            files_deleted: vec![],
+            input_tokens: None,
+            output_tokens: None,
+        };
+
+        let verification = verifier.verify_task(&task, &result, temp.path()).await;
+        assert!(verification.passed);
+        assert_eq!(verification.checks.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_verify_task_file_created_missing() {
+        let temp = TempDir::new().unwrap();
+
+        let verifier = Verifier::new(default_config());
+        let task = Task::new("t2", "Create file");
+        let result = TaskResult {
+            success: true,
+            output: String::new(),
+            files_created: vec!["missing.rs".into()],
+            files_modified: vec![],
+            files_deleted: vec![],
+            input_tokens: None,
+            output_tokens: None,
+        };
+
+        let verification = verifier.verify_task(&task, &result, temp.path()).await;
+        assert!(!verification.passed);
+    }
+
+    #[tokio::test]
+    async fn test_verify_full_no_commands_not_required() {
+        let temp = TempDir::new().unwrap();
+        let verifier = Verifier::new(default_config());
+        let verification = verifier.verify_full(temp.path()).await;
+        assert!(verification.passed);
+        assert!(verification.checks[0].name.contains("skipped"));
+    }
+
+    #[tokio::test]
+    async fn test_verify_full_no_commands_required_but_mandatory() {
+        let temp = TempDir::new().unwrap();
+        let verifier = Verifier::new(config_requiring_commands());
+        let verification = verifier.verify_full(temp.path()).await;
+        assert!(!verification.passed);
     }
 }

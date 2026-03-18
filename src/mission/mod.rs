@@ -14,6 +14,6 @@ pub use status::TaskStatus;
 pub use store::MissionStore;
 pub use task::{AgentType, Task, TaskResult};
 pub use types::{
-    IsolationMode, Learning, LearningCategory, Mission, MissionFlags, OnComplete, Phase, Priority,
-    Progress, RiskLevel,
+    IsolationMode, Learning, LearningCategory, Mission, MissionFlags, MissionPriority, OnComplete,
+    Phase, Progress, RiskLevel,
 };

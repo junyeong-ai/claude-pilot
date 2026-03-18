@@ -6,11 +6,9 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
-use super::message::{AgentMessage, MessageType};
+use super::message::{AgentMessage, AgentMessageType};
 use crate::error::{PilotError, Result};
 use crate::state::{DomainEvent, EventPayload, EventStore};
-
-const DEFAULT_CHANNEL_CAPACITY: usize = 256;
 
 pub struct AgentMessageBus {
     sender: broadcast::Sender<AgentMessage>,
@@ -38,7 +36,7 @@ impl AgentMessageBus {
 
         self.sender
             .send(message)
-            .map_err(|_| PilotError::Agent("No active receivers for message".into()))?;
+            .map_err(|_| PilotError::AgentExecution("No active receivers for message".into()))?;
 
         Ok(())
     }
@@ -46,7 +44,7 @@ impl AgentMessageBus {
     pub fn try_send(&self, message: AgentMessage) -> Result<()> {
         self.sender
             .send(message)
-            .map_err(|_| PilotError::Agent("No active receivers for message".into()))?;
+            .map_err(|_| PilotError::AgentExecution("No active receivers for message".into()))?;
         Ok(())
     }
 
@@ -61,7 +59,7 @@ impl AgentMessageBus {
     pub fn subscribe_filtered(
         &self,
         agent_id: impl Into<String>,
-        types: Vec<MessageType>,
+        types: Vec<AgentMessageType>,
     ) -> FilteredReceiver {
         FilteredReceiver {
             inner: self.subscribe(agent_id),
@@ -83,7 +81,7 @@ impl AgentMessageBus {
                     }
                     Ok(Some(_)) => continue,
                     Ok(None) => {
-                        return Err(PilotError::Agent("Channel closed".into()));
+                        return Err(PilotError::AgentExecution("Channel closed".into()));
                     }
                     Err(e) => return Err(e),
                 }
@@ -103,7 +101,7 @@ impl AgentMessageBus {
             EventPayload::AgentMessageSent {
                 from_agent: message.from.clone(),
                 to_agent: message.to.clone(),
-                message_type: format!("{:?}", message.message_type()),
+                message_type: message.message_type(),
                 correlation_id: message.correlation_id.clone(),
             },
         );
@@ -114,7 +112,8 @@ impl AgentMessageBus {
 
 impl Default for AgentMessageBus {
     fn default() -> Self {
-        Self::new(DEFAULT_CHANNEL_CAPACITY)
+        use crate::config::MessagingConfig;
+        Self::new(MessagingConfig::default().channel_capacity)
     }
 }
 
@@ -169,7 +168,7 @@ impl AgentReceiver {
             EventPayload::AgentMessageReceived {
                 from_agent: message.from.clone(),
                 to_agent: self.agent_id.clone(),
-                message_type: format!("{:?}", message.message_type()),
+                message_type: message.message_type(),
                 correlation_id: message.correlation_id.clone(),
             },
         );
@@ -180,7 +179,7 @@ impl AgentReceiver {
 
 pub struct FilteredReceiver {
     inner: AgentReceiver,
-    allowed_types: Vec<MessageType>,
+    allowed_types: Vec<AgentMessageType>,
 }
 
 impl FilteredReceiver {
@@ -222,7 +221,7 @@ mod tests {
         let msg = AgentMessage::new(
             "sender",
             "agent-1",
-            MessagePayload::Text {
+            MessagePayload::Broadcast {
                 content: "hello".into(),
             },
         );
@@ -242,7 +241,7 @@ mod tests {
 
         let msg = AgentMessage::broadcast(
             "coordinator",
-            MessagePayload::Text {
+            MessagePayload::Broadcast {
                 content: "announcement".into(),
             },
         );
@@ -256,7 +255,7 @@ mod tests {
     #[tokio::test]
     async fn test_filtered_receiver() {
         let bus = AgentMessageBus::new(16);
-        let mut filtered = bus.subscribe_filtered("agent-1", vec![MessageType::ConsensusVote]);
+        let mut filtered = bus.subscribe_filtered("agent-1", vec![AgentMessageType::ConsensusVote]);
 
         bus.try_send(AgentMessage::new(
             "sender",
@@ -272,7 +271,7 @@ mod tests {
             "agent-1",
             MessagePayload::ConsensusVote {
                 round: 1,
-                decision: crate::agent::multi::shared::VoteDecision::Approve,
+                decision: crate::domain::VoteDecision::Approve,
                 rationale: "vote".into(),
             },
         ))

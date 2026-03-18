@@ -13,6 +13,8 @@
 //!
 //! WARNING: These tests make real API calls and will incur costs.
 
+mod test_helpers;
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -22,10 +24,10 @@ use claude_pilot::agent::TaskAgent;
 use claude_pilot::agent::multi::{
     AdaptiveConsensusExecutor, AgentId, AgentMessage, AgentMessageBus, AgentPoolBuilder, AgentTask,
     ArchitectAgent, CoderAgent, ConsensusEngine, ConsensusResult, Coordinator, MessagePayload,
-    PlanningAgent, ResearchAgent, ReviewerAgent, SpecializedAgent, TaskContext, VerifierAgent,
+    PlanningAgent, ResearchAgent, SpecializedAgent, TaskContext,
 };
-use claude_pilot::config::{AgentConfig, ConsensusConfig, MultiAgentConfig};
-use claude_pilot::state::{EventPayload, EventStore};
+use claude_pilot::config::{ConsensusConfig, MultiAgentConfig};
+use claude_pilot::state::EventPayload;
 use claude_pilot::workspace::Workspace;
 use parking_lot::Mutex;
 use serde_json::json;
@@ -338,20 +340,11 @@ async fn create_workspace_from_test_project(dir: &Path) -> Arc<Workspace> {
     )
 }
 
-fn create_task_agent() -> Arc<TaskAgent> {
-    Arc::new(TaskAgent::new(AgentConfig::default()))
-}
-
 fn create_full_agent_set(task_agent: Arc<TaskAgent>) -> Vec<Arc<dyn SpecializedAgent>> {
-    vec![
-        ResearchAgent::with_id("research-0", Arc::clone(&task_agent)),
-        PlanningAgent::with_id("planning-0", Arc::clone(&task_agent)),
-        CoderAgent::with_id("coder-0", Arc::clone(&task_agent)),
-        CoderAgent::with_id("coder-1", Arc::clone(&task_agent)),
-        VerifierAgent::with_id("verifier-0", Arc::clone(&task_agent)),
-        ReviewerAgent::with_id("reviewer-0", Arc::clone(&task_agent)),
-        ArchitectAgent::with_id("architect-0", Arc::clone(&task_agent)),
-    ]
+    let mut agents = test_helpers::create_core_agents(Arc::clone(&task_agent));
+    agents.push(CoderAgent::with_id("coder-1", Arc::clone(&task_agent)));
+    agents.push(ArchitectAgent::with_id("architect-0", task_agent));
+    agents
 }
 
 async fn collect_messages(bus: Arc<AgentMessageBus>, duration: Duration) -> Vec<AgentMessage> {
@@ -396,11 +389,9 @@ async fn test_comprehensive_multi_agent_workflow() {
     let project_dir = temp_dir.path();
     create_comprehensive_test_project(project_dir);
 
-    let events_dir = project_dir.join(".pilot/events");
-    std::fs::create_dir_all(&events_dir).unwrap();
-    let event_store = Arc::new(EventStore::new(events_dir.join("events.db")).unwrap());
+    let event_store = test_helpers::setup_event_store(project_dir);
 
-    let task_agent = create_task_agent();
+    let task_agent = test_helpers::create_task_agent();
     let agents = create_full_agent_set(task_agent.clone());
 
     let mut config = MultiAgentConfig::default();
@@ -495,7 +486,7 @@ Implement proper password validation in the authentication module:
                 println!();
                 println!("   --- Agent Result {} ---", i + 1);
                 println!("   Task ID: {}", res.task_id);
-                println!("   Success: {}", res.success);
+                println!("   Success: {}", res.is_success());
                 if !res.findings.is_empty() {
                     println!("   Findings:");
                     for finding in &res.findings {
@@ -576,9 +567,7 @@ Implement proper password validation in the authentication module:
             | EventPayload::HierarchicalConsensusCompleted { .. } => hierarchical_events += 1,
             EventPayload::TierConsensusStarted { .. }
             | EventPayload::TierConsensusCompleted { .. } => tier_events += 1,
-            EventPayload::AgentTaskAssigned { .. }
-            | EventPayload::AgentTaskCompleted { .. }
-            | EventPayload::AgentMessageSent { .. }
+            EventPayload::AgentMessageSent { .. }
             | EventPayload::AgentMessageReceived { .. } => agent_events += 1,
             EventPayload::TaskStarted { .. }
             | EventPayload::TaskCompleted { .. }
@@ -701,11 +690,9 @@ async fn test_agent_direct_execution_with_messaging() {
     let project_dir = temp_dir.path();
     create_comprehensive_test_project(project_dir);
 
-    let events_dir = project_dir.join(".pilot/events");
-    std::fs::create_dir_all(&events_dir).unwrap();
-    let event_store = Arc::new(EventStore::new(events_dir.join("events.db")).unwrap());
+    let event_store = test_helpers::setup_event_store(project_dir);
 
-    let task_agent = create_task_agent();
+    let task_agent = test_helpers::create_task_agent();
     let message_bus =
         Arc::new(AgentMessageBus::default().with_event_store(Arc::clone(&event_store)));
 
@@ -859,11 +846,9 @@ async fn test_consensus_based_planning() {
     let project_dir = temp_dir.path();
     create_comprehensive_test_project(project_dir);
 
-    let events_dir = project_dir.join(".pilot/events");
-    std::fs::create_dir_all(&events_dir).unwrap();
-    let event_store = Arc::new(EventStore::new(events_dir.join("events.db")).unwrap());
+    let event_store = test_helpers::setup_event_store(project_dir);
 
-    let task_agent = create_task_agent();
+    let task_agent = test_helpers::create_task_agent();
 
     let research_agent = ResearchAgent::with_id("research-0", Arc::clone(&task_agent));
     let planning_agent = PlanningAgent::with_id("planning-0", Arc::clone(&task_agent));
@@ -973,6 +958,7 @@ async fn test_consensus_based_planning() {
             dissents,
             unresolved_conflicts,
             respondent_count,
+            ..
         }) => {
             println!("📝 Partial Agreement");
             println!("   Respondents: {}", respondent_count);
@@ -1035,12 +1021,12 @@ async fn test_consensus_based_planning() {
 }
 
 // ============================================================================
-// Test: Health Monitoring
+// Test: Standalone Health Monitoring
 // ============================================================================
 
 #[tokio::test]
 #[ignore = "Makes real API calls via Claude Code OAuth - run with --ignored --nocapture"]
-async fn test_health_monitoring() {
+async fn test_standalone_health_monitor() {
     println!("\n");
     println!("╔════════════════════════════════════════════════════════════════╗");
     println!("║   HEALTH MONITORING TEST                                      ║");
@@ -1051,7 +1037,7 @@ async fn test_health_monitoring() {
     let project_dir = temp_dir.path();
     create_comprehensive_test_project(project_dir);
 
-    let task_agent = create_task_agent();
+    let task_agent = test_helpers::create_task_agent();
     let agents = create_full_agent_set(task_agent.clone());
 
     let config = MultiAgentConfig::default();

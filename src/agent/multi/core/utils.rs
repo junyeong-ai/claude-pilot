@@ -1,5 +1,48 @@
 //! Utility functions for agent task processing.
 
+use std::path::{Component, Path, PathBuf};
+
+/// Validate that a file path stays within workspace boundaries.
+///
+/// Rejects absolute paths, `..` traversal, and paths that normalize outside the root.
+/// Uses lexical normalization (no filesystem access) since files may not exist yet.
+pub fn validate_workspace_path(path: &str, workspace_root: &Path) -> Option<PathBuf> {
+    let p = Path::new(path);
+
+    if p.is_absolute() {
+        return None;
+    }
+
+    for component in p.components() {
+        if matches!(component, Component::ParentDir) {
+            return None;
+        }
+    }
+
+    let full_path = workspace_root.join(p);
+    let normalized = normalize_path(&full_path);
+
+    if normalized.starts_with(workspace_root) {
+        Some(normalized)
+    } else {
+        None
+    }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                result.pop();
+            }
+            Component::CurDir => {}
+            other => result.push(other),
+        }
+    }
+    result
+}
+
 /// Calculate composite priority score from value and risk.
 /// Formula: value_score * 0.6 + risk_score * 0.4
 pub fn calculate_priority_score(value: Option<f64>, risk: Option<f64>) -> f64 {
@@ -40,7 +83,14 @@ pub fn extract_file_path(line: &str) -> Option<String> {
 }
 
 /// Extract multiple file paths from output text.
-pub fn extract_files_from_output(output: &str, limit: usize) -> Vec<String> {
+///
+/// When `workspace_root` is provided, paths are validated against workspace boundaries
+/// to prevent `../` traversal attacks from LLM output.
+pub fn extract_files_from_output(
+    output: &str,
+    limit: usize,
+    workspace_root: Option<&Path>,
+) -> Vec<String> {
     if output.is_empty() || limit == 0 {
         return Vec::new();
     }
@@ -82,6 +132,12 @@ pub fn extract_files_from_output(output: &str, limit: usize) -> Vec<String> {
                 && cleaned.chars().all(|c| !c.is_control() || c == '\t');
 
             if looks_like_path {
+                if let Some(root) = workspace_root
+                    && validate_workspace_path(cleaned, root).is_none()
+                {
+                    continue;
+                }
+
                 let path_str = cleaned.to_string();
                 if !files.contains(&path_str) {
                     files.push(path_str);
@@ -211,7 +267,7 @@ mod tests {
     #[test]
     fn test_extract_files_from_output_multiple() {
         let output = "Modified:\n  src/main.rs\n  src/lib.rs\n  tests/test.rs";
-        let files = extract_files_from_output(output, 10);
+        let files = extract_files_from_output(output, 10, None);
         assert!(files.contains(&"src/main.rs".to_string()));
         assert!(files.contains(&"src/lib.rs".to_string()));
         assert!(files.contains(&"tests/test.rs".to_string()));
@@ -220,7 +276,41 @@ mod tests {
     #[test]
     fn test_extract_files_from_output_limit() {
         let output = "src/a.rs src/b.rs src/c.rs src/d.rs";
-        let files = extract_files_from_output(output, 2);
+        let files = extract_files_from_output(output, 2, None);
         assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn test_validate_workspace_path_valid() {
+        let root = Path::new("/project");
+        assert!(validate_workspace_path("src/main.rs", root).is_some());
+        assert!(validate_workspace_path("./src/lib.rs", root).is_some());
+        assert!(validate_workspace_path("tests/test.rs", root).is_some());
+    }
+
+    #[test]
+    fn test_validate_workspace_path_rejects_traversal() {
+        let root = Path::new("/project");
+        assert!(validate_workspace_path("../etc/passwd", root).is_none());
+        assert!(validate_workspace_path("src/../../etc/hosts", root).is_none());
+        assert!(validate_workspace_path("../../../secret", root).is_none());
+    }
+
+    #[test]
+    fn test_validate_workspace_path_rejects_absolute() {
+        let root = Path::new("/project");
+        assert!(validate_workspace_path("/etc/passwd", root).is_none());
+        assert!(validate_workspace_path("/usr/bin/ls", root).is_none());
+    }
+
+    #[test]
+    fn test_extract_files_with_workspace_validation() {
+        let root = Path::new("/project");
+        let output = "src/main.rs ../etc/passwd src/lib.rs ../../secret.key";
+        let files = extract_files_from_output(output, 10, Some(root));
+        assert!(files.contains(&"src/main.rs".to_string()));
+        assert!(files.contains(&"src/lib.rs".to_string()));
+        assert!(!files.iter().any(|f| f.contains("etc/passwd")));
+        assert!(!files.iter().any(|f| f.contains("secret")));
     }
 }

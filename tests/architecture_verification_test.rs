@@ -16,11 +16,12 @@ use claude_pilot::agent::multi::hierarchy::{ConsensusStrategy, ParticipantSet, S
 use claude_pilot::agent::multi::messaging::{AgentMessage, AgentMessageBus, MessagePayload};
 use claude_pilot::agent::multi::shared::{AgentId, TierLevel};
 use claude_pilot::agent::multi::{
-    AgentPoolBuilder, CoderAgent, ConflictSeverity, HierarchicalAggregator, PlanningAgent,
+    AgentPoolBuilder, CoderAgent, HierarchicalAggregator, PlanningAgent,
     ResearchAgent, SpecializedAgent, VerifierAgent,
 };
+use claude_pilot::domain::Severity;
 use claude_pilot::config::{AgentConfig, ConsensusConfig, MultiAgentConfig};
-use claude_pilot::orchestration::AgentScope;
+use claude_pilot::agent::multi::AgentScope;
 use claude_pilot::state::EventStore;
 use tempfile::TempDir;
 
@@ -104,7 +105,7 @@ async fn test_broadcast_reception_by_all_agents() {
         "*",
         MessagePayload::ConflictAlert {
             conflict_id: "conflict-1".to_string(),
-            severity: ConflictSeverity::Major,
+            severity: Severity::Error,
             description: "Module boundary violation detected".to_string(),
         },
     );
@@ -445,7 +446,7 @@ async fn test_hierarchical_aggregation_flow() {
 
     aggregator.aggregate_tier(TierLevel::Module, module_results);
 
-    let module_agg = aggregator.get_tier(TierLevel::Module).unwrap();
+    let module_agg = aggregator.tier(TierLevel::Module).unwrap();
     println!(
         "\nModule tier summary: {:.0}% converged ({} units)",
         module_agg.convergence_ratio * 100.0,
@@ -586,7 +587,7 @@ async fn test_message_bus_event_store_integration() {
     bus.send(AgentMessage::new(
         "coordinator",
         "planning-0",
-        MessagePayload::Text {
+        MessagePayload::Broadcast {
             content: "Start planning phase".into(),
         },
     ))

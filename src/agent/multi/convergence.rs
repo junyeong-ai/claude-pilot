@@ -13,16 +13,16 @@ use std::collections::{HashMap, HashSet};
 use tracing::warn;
 
 use super::shared::{
-    ApiChange, ApiChangeType, ConflictSeverity, ConvergenceCheckResult, SemanticConflict,
+    ApiChange, ApiChangeType, ConvergenceCheckResult, SemanticConflict,
     SemanticConflictType, TypeChange,
 };
+use crate::domain::Severity;
 
 // ============================================================================
 // Convergence Configuration
 // ============================================================================
 
-const CONVERGENCE_THRESHOLD: f64 = 0.8;
-const HIGH_AGREEMENT_THRESHOLD: f64 = 0.9;
+use crate::config::ConsensusConfig;
 
 // ============================================================================
 // Proposal for Convergence Checking
@@ -82,18 +82,14 @@ impl SemanticProposal {
 /// Checks semantic convergence of proposals.
 pub struct SemanticConvergenceChecker {
     convergence_threshold: f64,
-}
-
-impl Default for SemanticConvergenceChecker {
-    fn default() -> Self {
-        Self::new()
-    }
+    high_agreement_threshold: f64,
 }
 
 impl SemanticConvergenceChecker {
-    pub fn new() -> Self {
+    pub fn new(config: &ConsensusConfig) -> Self {
         Self {
-            convergence_threshold: CONVERGENCE_THRESHOLD,
+            convergence_threshold: config.convergence_threshold,
+            high_agreement_threshold: config.high_agreement_threshold,
         }
     }
 
@@ -124,7 +120,7 @@ impl SemanticConvergenceChecker {
         // 2. Check for blocking conflicts
         let blocking: Vec<_> = conflicts
             .iter()
-            .filter(|c| c.severity == ConflictSeverity::Blocking)
+            .filter(|c| c.severity == Severity::Critical)
             .cloned()
             .collect();
 
@@ -141,7 +137,7 @@ impl SemanticConvergenceChecker {
         if agreement_score >= self.convergence_threshold {
             let minor_conflicts: Vec<_> = conflicts
                 .into_iter()
-                .filter(|c| c.severity != ConflictSeverity::Blocking)
+                .filter(|c| c.severity != Severity::Critical)
                 .collect();
 
             ConvergenceCheckResult::Converged {
@@ -243,7 +239,7 @@ impl SemanticConvergenceChecker {
                             "Conflicting signature changes for API '{}'",
                             original_name
                         ),
-                        severity: ConflictSeverity::Major,
+                        severity: Severity::Error,
                     });
                 }
             }
@@ -367,7 +363,7 @@ impl SemanticConvergenceChecker {
         }
 
         if api_changes.is_empty() {
-            return HIGH_AGREEMENT_THRESHOLD;
+            return self.high_agreement_threshold;
         }
 
         let mut consistent_count = 0;
@@ -396,7 +392,7 @@ impl SemanticConvergenceChecker {
         }
 
         if type_changes.is_empty() {
-            return HIGH_AGREEMENT_THRESHOLD;
+            return self.high_agreement_threshold;
         }
 
         let mut consistent_count = 0;
@@ -423,7 +419,7 @@ impl SemanticConvergenceChecker {
         }
 
         if all_used.is_empty() {
-            return HIGH_AGREEMENT_THRESHOLD;
+            return self.high_agreement_threshold;
         }
 
         // Score based on how many used dependencies are provided
@@ -522,10 +518,11 @@ impl CrossVisibilityContext {
 mod tests {
     use super::*;
     use crate::agent::multi::shared::TypeChangeType;
+    use crate::config::ConsensusConfig;
 
     #[test]
     fn test_single_proposal_converges() {
-        let checker = SemanticConvergenceChecker::new();
+        let checker = SemanticConvergenceChecker::new(&ConsensusConfig::default());
         let proposal =
             SemanticProposal::new("agent-1", "auth").with_summary("Implement JWT validation");
 
@@ -535,7 +532,7 @@ mod tests {
 
     #[test]
     fn test_compatible_proposals_converge() {
-        let checker = SemanticConvergenceChecker::new();
+        let checker = SemanticConvergenceChecker::new(&ConsensusConfig::default());
 
         // p1 adds an API and explicitly provides it as a dependency
         let p1 = SemanticProposal::new("agent-1", "auth")
@@ -554,7 +551,7 @@ mod tests {
 
     #[test]
     fn test_conflicting_rename_detected() {
-        let checker = SemanticConvergenceChecker::new();
+        let checker = SemanticConvergenceChecker::new(&ConsensusConfig::default());
 
         let p1 = SemanticProposal::new("agent-1", "auth")
             .with_api_changes(vec![ApiChange::rename("validate", "verify")]);
@@ -571,7 +568,7 @@ mod tests {
 
     #[test]
     fn test_type_conflict_detected() {
-        let checker = SemanticConvergenceChecker::new();
+        let checker = SemanticConvergenceChecker::new(&ConsensusConfig::default());
 
         let p1 = SemanticProposal::new("agent-1", "types").with_type_changes(vec![TypeChange {
             type_name: "User".to_string(),
@@ -594,7 +591,7 @@ mod tests {
 
     #[test]
     fn test_dependency_mismatch_detected() {
-        let checker = SemanticConvergenceChecker::new();
+        let checker = SemanticConvergenceChecker::new(&ConsensusConfig::default());
 
         // Consumer uses dependency not provided by anyone
         let p1 = SemanticProposal::new("agent-1", "api")
@@ -627,7 +624,7 @@ mod tests {
 
     #[test]
     fn test_agreement_scoring() {
-        let checker = SemanticConvergenceChecker::new();
+        let checker = SemanticConvergenceChecker::new(&ConsensusConfig::default());
 
         // All proposals agree on API changes
         let p1 = SemanticProposal::new("agent-1", "mod-a")

@@ -274,12 +274,12 @@ pub enum EscalationUrgency {
 }
 
 impl EscalationUrgency {
-    pub fn from_issue_severity(severity: crate::verification::IssueSeverity) -> Self {
+    pub fn from_severity(severity: crate::domain::Severity) -> Self {
         match severity {
-            crate::verification::IssueSeverity::Info => Self::Low,
-            crate::verification::IssueSeverity::Warning => Self::Medium,
-            crate::verification::IssueSeverity::Error => Self::High,
-            crate::verification::IssueSeverity::Critical => Self::Critical,
+            crate::domain::Severity::Info => Self::Low,
+            crate::domain::Severity::Warning => Self::Medium,
+            crate::domain::Severity::Error => Self::High,
+            crate::domain::Severity::Critical => Self::Critical,
         }
     }
 }
@@ -326,7 +326,7 @@ impl EscalationHandler {
     }
 
     pub async fn notify_user(&self, ctx: &EscalationContext) -> Result<()> {
-        eprintln!("{}", ctx.to_message());
+        warn!(mission_id = %ctx.mission_id, "{}", ctx.to_message());
 
         if let Some(ref notifier) = self.notifier {
             notifier
@@ -335,5 +335,256 @@ impl EscalationHandler {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::Severity;
+
+    // ── EscalationContext lifecycle ──
+
+    #[test]
+    fn test_escalation_context_new() {
+        let ctx = EscalationContext::new("mission-1", "Something went wrong");
+        assert!(ctx.id.starts_with("esc-"));
+        assert_eq!(ctx.mission_id, "mission-1");
+        assert_eq!(ctx.summary, "Something went wrong");
+        assert!(ctx.analysis.is_none());
+        assert!(ctx.attempted_strategies.is_empty());
+        assert!(ctx.persistent_issues.is_empty());
+        assert!(ctx.relevant_files.is_empty());
+        // Default action is Cancel
+        assert_eq!(ctx.suggested_actions.len(), 1);
+        assert_eq!(ctx.suggested_actions[0].label(), "cancel");
+        assert_eq!(ctx.status, EscalationStatus::Pending);
+        assert!(ctx.resolved_at.is_none());
+        assert!(ctx.resolution.is_none());
+    }
+
+    #[test]
+    fn test_escalation_context_with_strategies() {
+        let strategies = vec![AttemptedStrategy {
+            name: "retry".into(),
+            level: 1,
+            rounds: 3,
+            outcome: StrategyOutcome::Failed,
+        }];
+        let ctx = EscalationContext::new("m1", "fail").with_strategies(strategies);
+        assert_eq!(ctx.attempted_strategies.len(), 1);
+        assert_eq!(ctx.attempted_strategies[0].outcome, StrategyOutcome::Failed);
+    }
+
+    #[test]
+    fn test_add_action_no_duplicates() {
+        let mut ctx = EscalationContext::new("m1", "fail");
+        // Cancel is the default
+        assert_eq!(ctx.suggested_actions.len(), 1);
+
+        ctx.add_action(HumanAction::Retry);
+        assert_eq!(ctx.suggested_actions.len(), 2);
+
+        // Adding Retry again should be a no-op (same label)
+        ctx.add_action(HumanAction::Retry);
+        assert_eq!(ctx.suggested_actions.len(), 2);
+    }
+
+    #[test]
+    fn test_add_action_inserts_before_cancel() {
+        let mut ctx = EscalationContext::new("m1", "fail");
+        ctx.add_action(HumanAction::Retry);
+        // Retry should be inserted before Cancel
+        assert_eq!(ctx.suggested_actions[0].label(), "retry");
+        assert_eq!(ctx.suggested_actions[1].label(), "cancel");
+    }
+
+    #[test]
+    fn test_resolve() {
+        let mut ctx = EscalationContext::new("m1", "fail");
+        assert!(!ctx.is_resolved());
+
+        ctx.resolve(HumanResponse::RetryRequested);
+        assert!(ctx.is_resolved());
+        assert_eq!(ctx.status, EscalationStatus::Resolved);
+        assert!(ctx.resolved_at.is_some());
+        assert!(ctx.resolution.is_some());
+    }
+
+    #[test]
+    fn test_dismiss() {
+        let mut ctx = EscalationContext::new("m1", "fail");
+        ctx.dismiss("Not relevant");
+        assert!(ctx.is_resolved());
+        assert_eq!(ctx.status, EscalationStatus::Dismissed);
+        assert!(ctx.summary.contains("[Dismissed: Not relevant]"));
+        assert!(matches!(ctx.resolution, Some(HumanResponse::Cancelled)));
+    }
+
+    #[test]
+    fn test_to_message_contains_key_sections() {
+        let ctx = EscalationContext::new("mission-42", "Build keeps failing");
+        let msg = ctx.to_message();
+        assert!(msg.contains("ESCALATION REQUIRED"));
+        assert!(msg.contains("mission-42"));
+        assert!(msg.contains("Build keeps failing"));
+        assert!(msg.contains("Suggested Actions"));
+    }
+
+    // ── HumanAction ──
+
+    #[test]
+    fn test_human_action_labels() {
+        assert_eq!(
+            HumanAction::ProvideInfo {
+                question: "q".into()
+            }
+            .label(),
+            "provide-info"
+        );
+        assert_eq!(
+            HumanAction::ManualFix {
+                file: PathBuf::from("f"),
+                hint: "h".into()
+            }
+            .label(),
+            "manual-fix"
+        );
+        assert_eq!(
+            HumanAction::ReduceScope {
+                task_id: "t".into(),
+                reason: "r".into()
+            }
+            .label(),
+            "reduce-scope"
+        );
+        assert_eq!(
+            HumanAction::AcceptPartial {
+                remaining_issues: 3
+            }
+            .label(),
+            "accept-partial"
+        );
+        assert_eq!(HumanAction::Retry.label(), "retry");
+        assert_eq!(HumanAction::Cancel.label(), "cancel");
+    }
+
+    #[test]
+    fn test_human_action_display_text() {
+        let action = HumanAction::ProvideInfo {
+            question: "What is the API key?".into(),
+        };
+        assert_eq!(action.display_text(), "Provide info: What is the API key?");
+
+        let action = HumanAction::ManualFix {
+            file: PathBuf::from("src/lib.rs"),
+            hint: "fix it".into(),
+        };
+        assert_eq!(action.display_text(), "Manual fix: src/lib.rs");
+
+        let action = HumanAction::ReduceScope {
+            task_id: "task-5".into(),
+            reason: "too complex".into(),
+        };
+        assert_eq!(action.display_text(), "Skip task: task-5");
+
+        let action = HumanAction::AcceptPartial {
+            remaining_issues: 2,
+        };
+        assert_eq!(action.display_text(), "Accept with 2 remaining issues");
+
+        assert_eq!(HumanAction::Retry.display_text(), "Retry from last checkpoint");
+        assert_eq!(HumanAction::Cancel.display_text(), "Cancel mission");
+    }
+
+    // ── HumanResponse ──
+
+    #[test]
+    fn test_human_response_should_continue() {
+        assert!(HumanResponse::ProvidedInfo { info: "x".into() }.should_continue());
+        assert!(
+            HumanResponse::ManuallyFixed {
+                description: "d".into()
+            }
+            .should_continue()
+        );
+        assert!(
+            HumanResponse::AcceptedReducedScope {
+                skipped_task: "t".into()
+            }
+            .should_continue()
+        );
+        assert!(HumanResponse::AcceptedPartial.should_continue());
+        assert!(HumanResponse::RetryRequested.should_continue());
+        assert!(!HumanResponse::Cancelled.should_continue());
+    }
+
+    #[test]
+    fn test_human_response_should_retry() {
+        assert!(HumanResponse::ProvidedInfo { info: "x".into() }.should_retry());
+        assert!(
+            HumanResponse::ManuallyFixed {
+                description: "d".into()
+            }
+            .should_retry()
+        );
+        assert!(HumanResponse::RetryRequested.should_retry());
+        // These should NOT trigger retry
+        assert!(
+            !HumanResponse::AcceptedReducedScope {
+                skipped_task: "t".into()
+            }
+            .should_retry()
+        );
+        assert!(!HumanResponse::AcceptedPartial.should_retry());
+        assert!(!HumanResponse::Cancelled.should_retry());
+    }
+
+    // ── EscalationUrgency ──
+
+    #[test]
+    fn test_escalation_urgency_from_severity() {
+        assert_eq!(
+            EscalationUrgency::from_severity(Severity::Info),
+            EscalationUrgency::Low
+        );
+        assert_eq!(
+            EscalationUrgency::from_severity(Severity::Warning),
+            EscalationUrgency::Medium
+        );
+        assert_eq!(
+            EscalationUrgency::from_severity(Severity::Error),
+            EscalationUrgency::High
+        );
+        assert_eq!(
+            EscalationUrgency::from_severity(Severity::Critical),
+            EscalationUrgency::Critical
+        );
+    }
+
+    #[test]
+    fn test_escalation_urgency_ordering() {
+        assert!(EscalationUrgency::Low < EscalationUrgency::Medium);
+        assert!(EscalationUrgency::Medium < EscalationUrgency::High);
+        assert!(EscalationUrgency::High < EscalationUrgency::Critical);
+    }
+
+    // ── EscalationStatus Display ──
+
+    #[test]
+    fn test_escalation_status_display() {
+        assert_eq!(format!("{}", EscalationStatus::Pending), "pending");
+        assert_eq!(format!("{}", EscalationStatus::Acknowledged), "acknowledged");
+        assert_eq!(format!("{}", EscalationStatus::InProgress), "in progress");
+        assert_eq!(format!("{}", EscalationStatus::Resolved), "resolved");
+        assert_eq!(format!("{}", EscalationStatus::Dismissed), "dismissed");
+    }
+
+    // ── EscalationHandler ──
+
+    #[test]
+    fn test_escalation_handler_new_without_notifier() {
+        let handler = EscalationHandler::new(None);
+        assert!(handler.notifier.is_none());
     }
 }

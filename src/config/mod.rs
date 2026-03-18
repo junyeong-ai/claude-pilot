@@ -8,17 +8,21 @@
 mod model;
 mod settings;
 
+pub(crate) use settings::validate_unit_f32;
 pub use model::{DEFAULT_MODEL, ModelConfig};
 pub use settings::{
     AgentConfig, AgentModelsConfig, AuthMode, BudgetAllocationConfig, BuildSystem,
     CheckpointConfig, ChunkedPlanningConfig, CompactionConfig, CompactionLevelConfig,
-    ComplexityConfig, ConsensusConfig, ContextConfig, ContextEstimatorConfig, ContextLimitsConfig,
-    ConvergentVerificationConfig, DiscoveryConfig, DisplayConfig, EvidenceConfig,
-    ExecutionErrorConfig, FocusConfig, GitConfig, IsolationConfig, LearningConfig, ModelAgentType,
-    ModuleConfig, MultiAgentConfig, NotificationConfig, OrchestratorConfig, PatternBankConfig,
-    PhaseComplexityConfig, PilotConfig, ProjectPaths, QualityConfig, QuorumType, ReasoningConfig,
-    RecoveryConfig, RetryAnalyzerConfig, RetryHistoryConfig, SearchConfig, SelectionPolicy,
+    ComplexityAssessmentConfig, ConsensusConfig, ConsensusEscalationConfig,
+    ConsensusScoringConfig, ContextConfig, ContextEstimatorConfig, ContextLimitsConfig,
+    ConvergentVerificationConfig, DiscoveryConfig, DisplayConfig, EvidenceBudgetConfig,
+    ExecutionErrorConfig, FocusConfig, GitConfig, IsolationConfig, LearningConfig,
+    MessagingConfig, ModelAgentType, ModuleConfig, MultiAgentConfig, NotificationConfig,
+    OrchestratorConfig, PatternBankConfig, PhaseComplexityConfig, PilotConfig, ProjectPaths,
+    QualityConfig, ReasoningConfig, RecoveryConfig, ResearchConfig, RetryAnalyzerConfig,
+    RetryHistoryConfig, RulesConfig, SearchConfig, SelectionPolicy, SelectionWeightsConfig,
     StateConfig, TaskBudgetConfig, TaskDecompositionConfig, TaskScoringConfig, TaskScoringWeights,
     TierCrossVisibilityConfig, TierQuorumConfig, TokenEncoding, TokenizerConfig,
     VerificationCommands, VerificationConfig,
 };
+pub use crate::quality::{CoherenceConfig, EvidenceGatheringConfig, EvidenceSufficiencyConfig};

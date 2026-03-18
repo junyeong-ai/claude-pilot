@@ -16,12 +16,12 @@ pub use archive::{
 };
 pub use checks::{Check, CheckResult, Verification, VerificationScope};
 pub use convergent::{ConvergenceResult, ConvergentVerifier, PatternContext};
-pub use file_tracker::{FileChanges, FileTracker};
+pub use file_tracker::{TrackedFileChanges, FileTracker};
 pub use history::{
     ConvergenceState, FixStrategy, OscillationContext, OscillationPatternType, ProgressTrend,
     VerificationHistory,
 };
-pub use issue::{Issue, IssueCategory, IssueExtractor, IssueSeverity};
+pub use issue::{Issue, IssueCategory, IssueExtractor};
 pub use pattern_bank::{
     ConsolidationResult, ErrorSignature, FixAttemptRecord, FixPattern, FixTrajectory, PatternBank,
     PatternBankStatistics, PatternMatch, TrajectoryOutcome,

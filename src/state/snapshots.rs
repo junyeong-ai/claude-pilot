@@ -11,9 +11,8 @@ use tracing::warn;
 
 use super::projections::Projection;
 use super::state_err_with;
+use crate::config::StateConfig;
 use crate::error::Result;
-
-const MAX_SNAPSHOTS_PER_AGGREGATE: usize = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DurableSnapshot<T> {
@@ -21,6 +20,7 @@ pub struct DurableSnapshot<T> {
     pub aggregate_id: String,
     pub global_seq: u64,
     pub projection_type: String,
+    pub schema_version: u32,
     pub checksum: u32,
     pub created_at: DateTime<Utc>,
     pub data: T,
@@ -29,10 +29,15 @@ pub struct DurableSnapshot<T> {
 pub struct ProjectionSnapshotStore {
     conn: Arc<Mutex<Connection>>,
     db_path: PathBuf,
+    max_snapshots_per_aggregate: usize,
 }
 
 impl ProjectionSnapshotStore {
     pub fn new(db_path: impl AsRef<Path>) -> Result<Self> {
+        Self::with_config(db_path, &StateConfig::default())
+    }
+
+    pub fn with_config(db_path: impl AsRef<Path>, config: &StateConfig) -> Result<Self> {
         let db_path = db_path.as_ref().to_path_buf();
 
         if let Some(parent) = db_path.parent() {
@@ -48,10 +53,14 @@ impl ProjectionSnapshotStore {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             db_path,
+            max_snapshots_per_aggregate: config.max_snapshots_per_aggregate,
         })
     }
 
     fn init_schema(conn: &Connection) -> Result<()> {
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
+            .map_err(|e| state_err_with("Failed to set WAL mode", e))?;
+
         conn.execute_batch(
             r"
             CREATE TABLE IF NOT EXISTS projection_snapshots (
@@ -59,6 +68,7 @@ impl ProjectionSnapshotStore {
                 aggregate_id TEXT NOT NULL,
                 global_seq INTEGER NOT NULL,
                 projection_type TEXT NOT NULL,
+                schema_version INTEGER NOT NULL DEFAULT 1,
                 data BLOB NOT NULL,
                 checksum INTEGER NOT NULL,
                 created_at TEXT NOT NULL
@@ -81,7 +91,8 @@ impl ProjectionSnapshotStore {
         P: Projection + Serialize,
     {
         let projection_type = std::any::type_name::<P>();
-        let data = bincode::serialize(projection)
+        let schema_version = P::schema_version();
+        let data = serde_json::to_vec(projection)
             .map_err(|e| state_err_with("Failed to serialize projection", e))?;
         let checksum = Self::compute_checksum(&data);
         let id = uuid::Uuid::new_v4().to_string();
@@ -89,13 +100,14 @@ impl ProjectionSnapshotStore {
         let conn = self.conn.lock();
 
         conn.execute(
-            "INSERT INTO projection_snapshots (id, aggregate_id, global_seq, projection_type, data, checksum, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO projection_snapshots (id, aggregate_id, global_seq, projection_type, schema_version, data, checksum, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 &id,
                 aggregate_id,
                 projection.last_applied_seq() as i64,
                 projection_type,
+                schema_version as i64,
                 &data,
                 checksum as i64,
                 Utc::now().to_rfc3339(),
@@ -122,8 +134,8 @@ impl ProjectionSnapshotStore {
             )
             .map_err(|e| state_err_with("Failed to count snapshots", e))?;
 
-        if count as usize > MAX_SNAPSHOTS_PER_AGGREGATE {
-            let to_delete = count as usize - MAX_SNAPSHOTS_PER_AGGREGATE;
+        if count as usize > self.max_snapshots_per_aggregate {
+            let to_delete = count as usize - self.max_snapshots_per_aggregate;
             conn.execute(
                 "DELETE FROM projection_snapshots WHERE id IN (
                     SELECT id FROM projection_snapshots
@@ -144,13 +156,15 @@ impl ProjectionSnapshotStore {
         P: Projection + DeserializeOwned,
     {
         let projection_type = std::any::type_name::<P>();
+        let expected_version = P::schema_version();
         let conn = self.conn.lock();
 
-        let snapshots = self.get_snapshots_ordered(&conn, aggregate_id, projection_type)?;
+        let snapshots =
+            self.get_snapshots_ordered(&conn, aggregate_id, projection_type, expected_version)?;
 
         for (data, checksum, global_seq) in snapshots {
             if Self::compute_checksum(&data) == checksum {
-                match bincode::deserialize::<P>(&data) {
+                match serde_json::from_slice::<P>(&data) {
                     Ok(projection) => return Ok(Some((projection, global_seq))),
                     Err(e) => {
                         warn!(
@@ -181,13 +195,14 @@ impl ProjectionSnapshotStore {
         conn: &Connection,
         aggregate_id: &str,
         projection_type: &str,
+        schema_version: u32,
     ) -> Result<Vec<(Vec<u8>, u32, u64)>> {
         let mut stmt = conn
             .prepare(
                 "SELECT data, checksum, global_seq FROM projection_snapshots
-                 WHERE aggregate_id = ?1 AND projection_type = ?2
+                 WHERE aggregate_id = ?1 AND projection_type = ?2 AND schema_version = ?3
                  ORDER BY global_seq DESC
-                 LIMIT ?3",
+                 LIMIT ?4",
             )
             .map_err(|e| state_err_with("Failed to prepare snapshot query", e))?;
 
@@ -196,13 +211,14 @@ impl ProjectionSnapshotStore {
                 params![
                     aggregate_id,
                     projection_type,
-                    MAX_SNAPSHOTS_PER_AGGREGATE as i64
+                    schema_version as i64,
+                    self.max_snapshots_per_aggregate as i64
                 ],
                 |row| {
                     Ok((
                         row.get::<_, Vec<u8>>(0)?,
-                        row.get::<_, i64>(1)? as u32,
-                        row.get::<_, i64>(2)? as u64,
+                        u32::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+                        u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
                     ))
                 },
             )
@@ -234,6 +250,7 @@ impl Clone for ProjectionSnapshotStore {
         Self {
             conn: Arc::clone(&self.conn),
             db_path: self.db_path.clone(),
+            max_snapshots_per_aggregate: self.max_snapshots_per_aggregate,
         }
     }
 }
@@ -327,7 +344,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(count, MAX_SNAPSHOTS_PER_AGGREGATE as i64);
+        assert_eq!(count, store.max_snapshots_per_aggregate as i64);
     }
 
     #[test]

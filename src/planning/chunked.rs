@@ -9,7 +9,7 @@ use super::PlanningOrchestrator;
 use super::artifacts::{SpecArtifact, TasksArtifact};
 use super::orchestrator::PlanningResult;
 use crate::config::{
-    AgentConfig, ChunkedPlanningConfig, EvidenceConfig, QualityConfig, TaskDecompositionConfig,
+    AgentConfig, ChunkedPlanningConfig, EvidenceBudgetConfig, QualityConfig, TaskDecompositionConfig,
 };
 use crate::error::Result;
 
@@ -56,7 +56,7 @@ impl ChunkedPlanner {
         working_dir: &Path,
         agent_config: AgentConfig,
         quality_config: QualityConfig,
-        evidence_config: EvidenceConfig,
+        evidence_config: EvidenceBudgetConfig,
         task_decomposition_config: TaskDecompositionConfig,
         chunked_config: ChunkedPlanningConfig,
     ) -> Result<Self> {

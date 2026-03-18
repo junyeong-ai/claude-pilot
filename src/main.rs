@@ -1,14 +1,17 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Parser;
+use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use claude_pilot::cli::{Cli, Commands, ConfigAction, Display, OutputFormat, StatusFilterArg};
 use claude_pilot::config::{PilotConfig, ProjectPaths};
-use claude_pilot::error::{PilotError, Result};
+use claude_pilot::error::{GitError, MissionError, PilotError, Result};
 use claude_pilot::learning::LearningExtractor;
-use claude_pilot::mission::{IsolationMode, MissionFlags, OnComplete, Priority};
+use claude_pilot::mission::{IsolationMode, MissionFlags, MissionPriority, OnComplete};
 use claude_pilot::orchestrator::Orchestrator;
 use claude_pilot::output::{MissionOutput, OutputWriter};
 
@@ -112,7 +115,7 @@ fn find_project_root() -> Result<PathBuf> {
         if path.join(".git").exists() {
             return Ok(path.to_path_buf());
         }
-        path = path.parent().ok_or(PilotError::NotInGitRepo)?;
+        path = path.parent().ok_or(GitError::NotInGitRepo)?;
     }
 }
 
@@ -158,7 +161,7 @@ async fn cmd_mission(
     out: &OutputContext<'_>,
     description: &str,
     flags: MissionFlags,
-    priority: Option<Priority>,
+    priority: Option<MissionPriority>,
     on_complete: Option<OnComplete>,
     manifest: Option<PathBuf>,
 ) -> Result<()> {
@@ -167,7 +170,7 @@ async fn cmd_mission(
     let paths = ProjectPaths::new(root, &config);
     ensure_initialized(&paths)?;
 
-    let orchestrator = Orchestrator::with_manifest(config, paths, manifest).await?;
+    let orchestrator = Arc::new(Orchestrator::with_manifest(config, paths, manifest).await?);
     let mission = orchestrator
         .create_mission(description, flags, priority, on_complete)
         .await?;
@@ -185,13 +188,50 @@ async fn cmd_mission(
         None
     };
 
-    let result = orchestrator.execute(&mission.id).await;
+    // Graceful shutdown: first Ctrl-C → pause + checkpoint, second → cancel via token
+    let shutdown_token = CancellationToken::new();
+    let first_signal = Arc::new(AtomicBool::new(false));
+    let orchestrator_ref = Arc::clone(&orchestrator);
+    let first_signal_clone = first_signal.clone();
+    let token_clone = shutdown_token.clone();
+    let signal_task = tokio::spawn(async move {
+        loop {
+            if tokio::signal::ctrl_c().await.is_err() {
+                break;
+            }
+            if first_signal_clone.swap(true, Ordering::SeqCst) {
+                // Second Ctrl-C: cancel via token (Drop chain will still execute)
+                eprintln!("\nForce shutdown — flushing state...");
+                token_clone.cancel();
+                break;
+            }
+            orchestrator_ref
+                .broadcast_signal(claude_pilot::orchestrator::Signal::Pause)
+                .await;
+            eprintln!(
+                "\nReceived Ctrl-C. Saving checkpoint... (press again to force quit)"
+            );
+        }
+    });
+
+    let result = tokio::select! {
+        r = orchestrator.execute(&mission.id) => r,
+        _ = shutdown_token.cancelled() => {
+            Err(PilotError::Mission(MissionError::Cancelled))
+        }
+    };
+    signal_task.abort();
+    if let Err(e) = signal_task.await
+        && e.is_panic()
+    {
+        tracing::warn!("Signal handler panicked during shutdown");
+    }
 
     if let Some(s) = spinner {
         s.finish_and_clear();
     }
 
-    let updated = orchestrator.get_status(&mission.id).await?;
+    let updated = orchestrator.status(&mission.id).await?;
     let success = result.is_ok();
 
     match out.writer.format() {
@@ -224,7 +264,7 @@ async fn cmd_status(out: &OutputContext<'_>, mission_id: Option<String>) -> Resu
 
     match mission_id {
         Some(id) => {
-            let mission = orchestrator.get_status(&id).await?;
+            let mission = orchestrator.status(&id).await?;
 
             // Check for orphan state and show warning
             if mission.status == claude_pilot::MissionState::Running
@@ -382,7 +422,7 @@ async fn cmd_resume(out: &OutputContext<'_>, mission_id: &str) -> Result<()> {
             Err(e) => out.display.print_error(&format!("Failed to resume: {}", e)),
         },
         OutputFormat::Json | OutputFormat::Stream => {
-            let updated = orchestrator.get_status(mission_id).await?;
+            let updated = orchestrator.status(mission_id).await?;
             let output = MissionOutput::from_mission(&updated, result.is_ok());
             out.writer.emit_result(&output);
         }
@@ -456,7 +496,7 @@ async fn cmd_retry(
         s.finish_and_clear();
     }
 
-    let updated = orchestrator.get_status(mission_id).await?;
+    let updated = orchestrator.status(mission_id).await?;
     let success = result.is_ok();
 
     match out.writer.format() {
@@ -486,13 +526,14 @@ async fn cmd_merge(out: &OutputContext<'_>, mission_id: &str, delete_branch: boo
     ensure_initialized(&paths)?;
 
     let orchestrator = Orchestrator::new(config, paths.clone()).await?;
-    let mission = orchestrator.get_status(mission_id).await?;
+    let mission = orchestrator.status(mission_id).await?;
 
     if mission.status != claude_pilot::MissionState::Completed {
-        return Err(PilotError::InvalidMissionState {
+        return Err(MissionError::InvalidState {
             expected: "completed".into(),
             actual: mission.status.to_string(),
-        });
+        }
+        .into());
     }
 
     let isolation = claude_pilot::isolation::IsolationManager::new(&paths);
@@ -599,7 +640,7 @@ async fn cmd_cleanup(out: &OutputContext<'_>, mission_id: Option<String>, all: b
             }
         }
     } else if let Some(id) = mission_id {
-        let mission = orchestrator.get_status(&id).await?;
+        let mission = orchestrator.status(&id).await?;
         isolation.cleanup(&mission, true).await?;
         match out.writer.format() {
             OutputFormat::Text => out
@@ -639,7 +680,7 @@ async fn cmd_extract(
             .filter(|m| m.status == claude_pilot::MissionState::Completed)
             .collect()
     } else if let Some(id) = mission_id {
-        vec![orchestrator.get_status(&id).await?]
+        vec![orchestrator.status(&id).await?]
     } else {
         if out.writer.format() == OutputFormat::Text {
             out.display

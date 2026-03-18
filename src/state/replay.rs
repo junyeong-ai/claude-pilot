@@ -6,22 +6,39 @@ use tracing::{debug, info};
 use super::event_store::EventStore;
 use super::projections::Projection;
 use super::snapshots::ProjectionSnapshotStore;
+use crate::config::StateConfig;
 use crate::error::Result;
-
-const EVENTS_PER_SNAPSHOT: u64 = 1000;
 
 pub struct EventReplayer {
     event_store: EventStore,
     snapshot_store: ProjectionSnapshotStore,
     snapshot_interval: u64,
+    archive_after_snapshot: bool,
+    vacuum_interval_events: u64,
+    archived_since_vacuum: std::sync::atomic::AtomicU64,
 }
 
 impl EventReplayer {
     pub fn new(event_store: EventStore, snapshot_store: ProjectionSnapshotStore) -> Self {
+        let config = StateConfig::default();
         Self {
             event_store,
             snapshot_store,
-            snapshot_interval: EVENTS_PER_SNAPSHOT,
+            snapshot_interval: config.snapshot_interval as u64,
+            archive_after_snapshot: config.archive_after_snapshot,
+            vacuum_interval_events: config.vacuum_interval_events,
+            archived_since_vacuum: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    pub fn with_config(event_store: EventStore, snapshot_store: ProjectionSnapshotStore, config: &StateConfig) -> Self {
+        Self {
+            event_store,
+            snapshot_store,
+            snapshot_interval: config.snapshot_interval as u64,
+            archive_after_snapshot: config.archive_after_snapshot,
+            vacuum_interval_events: config.vacuum_interval_events,
+            archived_since_vacuum: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -46,15 +63,13 @@ impl EventReplayer {
             "Replaying events from sequence"
         );
 
-        let events = self.event_store.query_from_global_seq(from_seq).await?;
+        let events = self
+            .event_store
+            .query_aggregate_from_seq(aggregate_id, from_seq)
+            .await?;
 
-        let events_for_aggregate: Vec<_> = events
-            .into_iter()
-            .filter(|e| e.aggregate_id.as_str() == aggregate_id)
-            .collect();
-
-        let event_count = events_for_aggregate.len();
-        for event in events_for_aggregate {
+        let event_count = events.len();
+        for event in events {
             projection.apply_idempotent(&event);
         }
 
@@ -65,10 +80,12 @@ impl EventReplayer {
             "Projection rebuilt"
         );
 
-        if event_count as u64 >= self.snapshot_interval
-            && let Err(e) = self.snapshot_store.save(aggregate_id, &projection)
-        {
-            debug!(error = %e, "Failed to save snapshot after rebuild");
+        if event_count as u64 >= self.snapshot_interval {
+            if let Err(e) = self.snapshot_store.save(aggregate_id, &projection) {
+                debug!(error = %e, "Failed to save snapshot after rebuild");
+            } else {
+                self.auto_archive_if_enabled(projection.last_applied_seq()).await;
+            }
         }
 
         Ok(projection)
@@ -93,14 +110,12 @@ impl EventReplayer {
             0
         };
 
-        let events = self.event_store.query_from_global_seq(from_seq).await?;
+        let events = self
+            .event_store
+            .query_aggregate_from_seq_until(aggregate_id, from_seq, checkpoint_seq)
+            .await?;
 
-        let events_for_aggregate: Vec<_> = events
-            .into_iter()
-            .filter(|e| e.aggregate_id.as_str() == aggregate_id && e.global_seq <= checkpoint_seq)
-            .collect();
-
-        for event in events_for_aggregate {
+        for event in events {
             projection.apply_idempotent(&event);
         }
 
@@ -140,9 +155,38 @@ impl EventReplayer {
         if should_snapshot {
             self.snapshot_store.save(aggregate_id, projection)?;
             debug!(aggregate_id, seq = current_seq, "Created periodic snapshot");
+            self.auto_archive_if_enabled(current_seq).await;
             Ok(true)
         } else {
             Ok(false)
+        }
+    }
+
+    async fn auto_archive_if_enabled(&self, snapshot_seq: u64) {
+        if !self.archive_after_snapshot {
+            return;
+        }
+
+        match self.event_store.archive_events_through(snapshot_seq).await {
+            Ok(archived) => {
+                debug!(archived, snapshot_seq, "Auto-archived events after snapshot");
+                let total = self
+                    .archived_since_vacuum
+                    .fetch_add(archived, std::sync::atomic::Ordering::Relaxed)
+                    + archived;
+                if total >= self.vacuum_interval_events {
+                    self.archived_since_vacuum
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
+                    if let Err(e) = self.event_store.compact().await {
+                        debug!(error = %e, "Auto-compact after archive failed");
+                    } else {
+                        debug!("Auto-compacted database after archive threshold");
+                    }
+                }
+            }
+            Err(e) => {
+                debug!(error = %e, "Auto-archive after snapshot failed");
+            }
         }
     }
 

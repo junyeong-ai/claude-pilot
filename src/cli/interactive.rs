@@ -4,7 +4,7 @@ use std::io::{self, Write};
 
 use console::{Term, style};
 
-use crate::domain::{EscalationContext, HumanAction, HumanResponse};
+use crate::recovery::{EscalationContext, HumanAction, HumanResponse};
 use crate::error::{PilotError, Result};
 
 /// Handler for interactive CLI escalation.
@@ -84,10 +84,10 @@ impl InteractiveHandler {
         println!("{}", style("Attempted Strategies:").bold().white());
         for (i, strategy) in ctx.attempted_strategies.iter().enumerate() {
             let outcome_style = match strategy.outcome {
-                crate::domain::StrategyOutcome::Success => style("✓").green(),
-                crate::domain::StrategyOutcome::PartialSuccess => style("~").yellow(),
-                crate::domain::StrategyOutcome::Failed => style("✗").red(),
-                crate::domain::StrategyOutcome::Stagnated => style("○").dim(),
+                crate::recovery::StrategyOutcome::Success => style("✓").green(),
+                crate::recovery::StrategyOutcome::PartialSuccess => style("~").yellow(),
+                crate::recovery::StrategyOutcome::Failed => style("✗").red(),
+                crate::recovery::StrategyOutcome::Stagnated => style("○").dim(),
             };
             println!(
                 "  {}. {} {} (level {}, {} rounds)",
@@ -118,10 +118,10 @@ impl InteractiveHandler {
         );
         for issue in shown {
             let severity_style = match issue.severity {
-                crate::verification::IssueSeverity::Critical => style("CRIT").red().bold(),
-                crate::verification::IssueSeverity::Error => style("ERR ").red(),
-                crate::verification::IssueSeverity::Warning => style("WARN").yellow(),
-                crate::verification::IssueSeverity::Info => style("INFO").dim(),
+                crate::domain::Severity::Critical => style("CRIT").red().bold(),
+                crate::domain::Severity::Error => style("ERR ").red(),
+                crate::domain::Severity::Warning => style("WARN").yellow(),
+                crate::domain::Severity::Info => style("INFO").dim(),
             };
 
             let location = match (&issue.file, issue.line) {

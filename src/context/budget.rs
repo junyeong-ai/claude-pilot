@@ -180,8 +180,11 @@ impl TokenBudget {
 
 impl Default for TokenBudget {
     fn default() -> Self {
+        let usable = ModelConfig::try_default()
+            .map(|c| c.usable_context())
+            .unwrap_or(ModelConfig::fallback_usable_context());
         Self::with_config(
-            ModelConfig::default().usable_context() as usize,
+            usable as usize,
             0.8,
             BudgetAllocationConfig::default(),
             PhaseComplexityConfig::default(),
@@ -409,8 +412,11 @@ impl BudgetAllocation {
 
 impl Default for BudgetAllocation {
     fn default() -> Self {
+        let usable = ModelConfig::try_default()
+            .map(|c| c.usable_context())
+            .unwrap_or(ModelConfig::fallback_usable_context());
         Self::for_budget_with_config(
-            ModelConfig::default().usable_context() as usize,
+            usable as usize,
             &BudgetAllocationConfig::default(),
         )
     }

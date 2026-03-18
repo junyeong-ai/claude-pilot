@@ -6,50 +6,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
-use super::consensus::{Conflict, ConflictSeverity, ConsensusResult, ConsensusTask};
+use super::consensus::{Conflict, ConsensusResult, ConsensusTask};
+use crate::domain::{EscalationLevel, Severity};
 use crate::error::{PilotError, Result};
 
-/// Escalation levels for conflict resolution, ordered by severity (lower = less severe).
-///
-/// The escalation process follows this progression:
-/// 1. **Retry** (0): Simple retry with different agents
-/// 2. **ScopeReduction** (1): Reduce scope by executing non-conflicting tasks only
-/// 3. **ArchitecturalMediation** (2): Request architect agent to mediate
-/// 4. **SplitAndConquer** (3): Split task into smaller, independent units
-/// 5. **HumanEscalation** (4): Request human intervention (terminal level)
-///
-/// Use `next()` to progress to the next escalation level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EscalationLevel {
-    Retry = 0,
-    ScopeReduction = 1,
-    ArchitecturalMediation = 2,
-    SplitAndConquer = 3,
-    HumanEscalation = 4,
-}
-
-impl EscalationLevel {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Retry => "retry",
-            Self::ScopeReduction => "scope_reduction",
-            Self::ArchitecturalMediation => "architectural_mediation",
-            Self::SplitAndConquer => "split_and_conquer",
-            Self::HumanEscalation => "human_escalation",
-        }
-    }
-
-    pub fn next(self) -> Option<Self> {
-        match self {
-            Self::Retry => Some(Self::ScopeReduction),
-            Self::ScopeReduction => Some(Self::ArchitecturalMediation),
-            Self::ArchitecturalMediation => Some(Self::SplitAndConquer),
-            Self::SplitAndConquer => Some(Self::HumanEscalation),
-            Self::HumanEscalation => None,
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub enum EscalationStrategy {
@@ -129,20 +89,20 @@ impl EscalationHistory {
             .unwrap_or(0)
     }
 
-    pub fn get_attempts(&self, mission_id: &str) -> Option<Vec<EscalationLevel>> {
+    pub fn attempts(&self, mission_id: &str) -> Option<Vec<EscalationLevel>> {
         self.mission_attempts.read().get(mission_id).cloned()
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct EscalationConfig {
+pub struct HumanEscalationConfig {
     pub max_retries_per_level: usize,
     pub enable_human_escalation: bool,
     pub human_escalation_timeout: Duration,
     pub fallback_on_human_timeout: FallbackStrategy,
 }
 
-impl Default for EscalationConfig {
+impl Default for HumanEscalationConfig {
     fn default() -> Self {
         Self {
             max_retries_per_level: 2,
@@ -194,14 +154,15 @@ impl ConsensusData {
                 has_blocking: false,
             },
             ConsensusResult::PartialAgreement {
+                tasks,
                 unresolved_conflicts,
                 ..
             } => Self {
-                tasks: vec![],
+                tasks: tasks.clone(),
                 conflicts: unresolved_conflicts.clone(),
                 has_blocking: unresolved_conflicts
                     .iter()
-                    .any(|c| c.severity == ConflictSeverity::Blocking),
+                    .any(|c| c.severity == Severity::Critical),
             },
             ConsensusResult::NoConsensus {
                 blocking_conflicts, ..
@@ -210,19 +171,19 @@ impl ConsensusData {
                 conflicts: blocking_conflicts.clone(),
                 has_blocking: blocking_conflicts
                     .iter()
-                    .any(|c| c.severity == ConflictSeverity::Blocking),
+                    .any(|c| c.severity == Severity::Critical),
             },
         }
     }
 }
 
 pub struct EscalationEngine {
-    config: EscalationConfig,
+    config: HumanEscalationConfig,
     history: EscalationHistory,
 }
 
 impl EscalationEngine {
-    pub fn new(config: EscalationConfig) -> Self {
+    pub fn new(config: HumanEscalationConfig) -> Self {
         Self {
             config,
             history: EscalationHistory::default(),
@@ -408,7 +369,7 @@ Output JSON: {{"decision": "...", "justification": "...", "follow_ups": [...]}}"
 
         let attempted_resolutions: Vec<AttemptedResolution> = self
             .history
-            .get_attempts(mission_id)
+            .attempts(mission_id)
             .map(|levels| {
                 levels
                     .iter()
@@ -593,7 +554,7 @@ Output JSON: {{"decision": "...", "justification": "...", "follow_ups": [...]}}"
 
 impl Default for EscalationEngine {
     fn default() -> Self {
-        Self::new(EscalationConfig::default())
+        Self::new(HumanEscalationConfig::default())
     }
 }
 
@@ -602,25 +563,12 @@ mod tests {
     use super::*;
 
     fn mock_no_consensus(with_blocking: bool) -> ConsensusResult {
-        let conflicts = if with_blocking {
-            vec![Conflict {
-                id: "c1".into(),
-                agents: vec!["auth".into(), "api".into()],
-                topic: "Test conflict".into(),
-                positions: vec!["Position A".into(), "Position B".into()],
-                severity: ConflictSeverity::Blocking,
-                resolution: None,
-            }]
-        } else {
-            vec![Conflict {
-                id: "c1".into(),
-                agents: vec!["auth".into(), "api".into()],
-                topic: "Test conflict".into(),
-                positions: vec!["Position A".into(), "Position B".into()],
-                severity: ConflictSeverity::Minor,
-                resolution: None,
-            }]
-        };
+        let severity = if with_blocking { Severity::Critical } else { Severity::Info };
+        let conflicts = vec![
+            Conflict::new("c1", "Test conflict", severity)
+                .with_agents(vec!["auth".into(), "api".into()])
+                .with_positions(vec!["Position A".into(), "Position B".into()]),
+        ];
 
         ConsensusResult::NoConsensus {
             summary: "No consensus reached".into(),
@@ -631,7 +579,7 @@ mod tests {
 
     #[test]
     fn test_escalation_level_progression() {
-        let engine = EscalationEngine::new(EscalationConfig {
+        let engine = EscalationEngine::new(HumanEscalationConfig {
             max_retries_per_level: 1,
             enable_human_escalation: true,
             ..Default::default()
@@ -663,7 +611,7 @@ mod tests {
 
     #[test]
     fn test_blocking_skips_retry() {
-        let engine = EscalationEngine::new(EscalationConfig {
+        let engine = EscalationEngine::new(HumanEscalationConfig {
             max_retries_per_level: 2,
             enable_human_escalation: true,
             ..Default::default()

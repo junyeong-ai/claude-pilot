@@ -20,7 +20,7 @@ use crate::verification::PatternBank;
 use super::evidence::Evidence;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TaskScore {
+pub struct TaskComplexityScore {
     /// File complexity score. Always available when evidence exists.
     pub file_score: Option<f32>,
     /// Dependency complexity score. Always available when evidence exists.
@@ -37,7 +37,7 @@ pub struct TaskScore {
     pub available_dimensions: u8,
 }
 
-impl TaskScore {
+impl TaskComplexityScore {
     pub fn calculate_total(&mut self, weights: &TaskScoringWeights) {
         let mut sum = 0.0;
         let mut weight_sum = 0.0;
@@ -181,14 +181,14 @@ impl TaskScorer {
         debug!(count = cache.len(), "Loaded historical tasks");
     }
 
-    pub fn score(&self, task: &Task, evidence: Option<&Evidence>) -> TaskScore {
+    pub fn score(&self, task: &Task, evidence: Option<&Evidence>) -> TaskComplexityScore {
         let file_score = self.calculate_file_score(evidence);
         let dependency_score = self.calculate_dependency_score(evidence);
         let pattern_score = self.calculate_pattern_score();
         let confidence_score = self.calculate_confidence_score(evidence);
         let history_score = self.calculate_history_score(task);
 
-        let mut score = TaskScore {
+        let mut score = TaskComplexityScore {
             file_score,
             dependency_score,
             pattern_score,
@@ -264,14 +264,14 @@ impl TaskScorer {
         &self,
         description: &str,
         evidence: Option<&Evidence>,
-    ) -> TaskScore {
+    ) -> TaskComplexityScore {
         let file_score = self.calculate_file_score(evidence);
         let dependency_score = self.calculate_dependency_score(evidence);
         let pattern_score = self.calculate_pattern_score();
         let confidence_score = self.calculate_confidence_score(evidence);
         let history_score = self.calculate_history_score_from_description(description);
 
-        let mut score = TaskScore {
+        let mut score = TaskComplexityScore {
             file_score,
             dependency_score,
             pattern_score,
@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn test_task_score_calculation() {
-        let mut score = TaskScore {
+        let mut score = TaskComplexityScore {
             file_score: Some(0.8),
             dependency_score: Some(0.7),
             pattern_score: Some(0.9),
@@ -566,7 +566,7 @@ mod tests {
 
     #[test]
     fn test_task_score_with_missing_dimensions() {
-        let mut score = TaskScore {
+        let mut score = TaskComplexityScore {
             file_score: Some(0.8),
             dependency_score: Some(0.7),
             pattern_score: None,
@@ -585,7 +585,7 @@ mod tests {
 
     #[test]
     fn test_task_score_format_for_llm() {
-        let score = TaskScore {
+        let score = TaskComplexityScore {
             file_score: Some(0.8),
             dependency_score: Some(0.7),
             pattern_score: None,

@@ -27,7 +27,7 @@ pub struct Mission {
     #[serde(default)]
     pub phases: Vec<Phase>,
 
-    pub priority: Priority,
+    pub priority: MissionPriority,
     pub on_complete: OnComplete,
 
     pub created_at: DateTime<Utc>,
@@ -73,7 +73,7 @@ impl Mission {
             base_branch: String::from("main"),
             tasks: Vec::new(),
             phases: Vec::new(),
-            priority: Priority::P2,
+            priority: MissionPriority::P2,
             on_complete: OnComplete::Manual,
             created_at: Utc::now(),
             started_at: None,
@@ -94,7 +94,7 @@ impl Mission {
         self
     }
 
-    pub fn with_priority(mut self, priority: Priority) -> Self {
+    pub fn with_priority(mut self, priority: MissionPriority) -> Self {
         self.priority = priority;
         self
     }
@@ -269,7 +269,7 @@ impl std::fmt::Display for IsolationMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum Priority {
+pub enum MissionPriority {
     P1,
     #[default]
     P2,
@@ -277,7 +277,7 @@ pub enum Priority {
     P4,
 }
 
-impl std::fmt::Display for Priority {
+impl std::fmt::Display for MissionPriority {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::P1 => write!(f, "P1"),
@@ -288,7 +288,7 @@ impl std::fmt::Display for Priority {
     }
 }
 
-impl std::str::FromStr for Priority {
+impl std::str::FromStr for MissionPriority {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {

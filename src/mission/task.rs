@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use super::TaskStatus;
 
+const DEFAULT_MAX_RETRIES: u32 = 3;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
@@ -60,7 +62,7 @@ impl Task {
             dependencies: Vec::new(),
             agent_type: AgentType::General,
             retry_count: 0,
-            max_retries: 3,
+            max_retries: DEFAULT_MAX_RETRIES,
             affected_files: Vec::new(),
             test_patterns: Vec::new(),
             started_at: None,

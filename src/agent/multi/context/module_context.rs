@@ -4,26 +4,17 @@
 //! - Layer 0: Base Agent (WHO) - Required
 //! - Layer 1: modmap Module (WHAT) - Primary module context
 //! - Layer 2: Manifest Context (WHAT) - Per-module rules, conventions, issues from manifest
-//! - Layer 3: Rules (WHAT) - Optional path-based domain knowledge
-//! - Layer 4: Skills (HOW) - Optional task methodology
 
 use modmap::{Module, ModuleContext as ManifestModuleContext};
-
-use crate::agent::multi::rules::ResolvedRules;
-use crate::agent::multi::skills::Skill;
 
 /// Builds agent context from modmap::Module with optional enhancements.
 ///
 /// The builder follows the progressive enhancement principle:
 /// - modmap Module alone provides sufficient context for collaboration
 /// - Manifest context adds per-module rule paths, conventions, issues
-/// - Rules add path-based domain knowledge injection
-/// - Skills add task methodology (HOW)
 pub struct ModuleContextBuilder<'a> {
     module: Option<&'a Module>,
     manifest_context: Option<&'a ManifestModuleContext>,
-    rules: Option<&'a ResolvedRules>,
-    skill: Option<&'a Skill>,
 }
 
 impl<'a> ModuleContextBuilder<'a> {
@@ -32,8 +23,6 @@ impl<'a> ModuleContextBuilder<'a> {
         Self {
             module: Some(module),
             manifest_context: None,
-            rules: None,
-            skill: None,
         }
     }
 
@@ -42,26 +31,12 @@ impl<'a> ModuleContextBuilder<'a> {
         Self {
             module: None,
             manifest_context: None,
-            rules: None,
-            skill: None,
         }
     }
 
     /// Add manifest context (per-module rules, conventions, issues).
     pub fn with_manifest_context(mut self, ctx: &'a ManifestModuleContext) -> Self {
         self.manifest_context = Some(ctx);
-        self
-    }
-
-    /// Add resolved rules to the context.
-    pub fn with_rules(mut self, rules: &'a ResolvedRules) -> Self {
-        self.rules = Some(rules);
-        self
-    }
-
-    /// Add a skill methodology to the context.
-    pub fn with_skill(mut self, skill: &'a Skill) -> Self {
-        self.skill = Some(skill);
         self
     }
 
@@ -81,20 +56,6 @@ impl<'a> ModuleContextBuilder<'a> {
         {
             prompt.push_str("\n\n---\n\n");
             prompt.push_str(&self.build_manifest_context_section(ctx));
-        }
-
-        // Layer 3: Rules (optional)
-        if let Some(rules) = self.rules
-            && !rules.is_empty()
-        {
-            prompt.push_str("\n\n---\n\n");
-            prompt.push_str(&rules.to_prompt());
-        }
-
-        // Layer 4: Skill methodology (optional)
-        if let Some(skill) = self.skill {
-            prompt.push_str("\n\n---\n\n");
-            prompt.push_str(&skill.methodology);
         }
 
         prompt
@@ -133,19 +94,7 @@ impl<'a> ModuleContextBuilder<'a> {
             })
             .unwrap_or(0);
 
-        let rules_size = self
-            .rules
-            .map(|r| {
-                r.rules()
-                    .iter()
-                    .map(|rule| rule.content.len())
-                    .sum::<usize>()
-            })
-            .unwrap_or(0);
-
-        let skill_size = self.skill.map(|s| s.methodology.len()).unwrap_or(0);
-
-        module_size + manifest_size + rules_size + skill_size + 256
+        module_size + manifest_size + 256
     }
 
     fn build_manifest_context_section(&self, ctx: &ManifestModuleContext) -> String {
@@ -283,8 +232,6 @@ OUT_OF_SCOPE: file="path" reason="why" module="owner"
 pub struct ModuleContext {
     pub system_prompt: String,
     pub module_id: Option<String>,
-    pub has_rules: bool,
-    pub has_skill: bool,
 }
 
 impl ModuleContext {
@@ -292,8 +239,6 @@ impl ModuleContext {
         Self {
             system_prompt: builder.build_system_prompt(),
             module_id: builder.module_id().map(String::from),
-            has_rules: builder.rules.map(|r| !r.is_empty()).unwrap_or(false),
-            has_skill: builder.skill.is_some(),
         }
     }
 
@@ -301,8 +246,6 @@ impl ModuleContext {
         Self {
             system_prompt: String::new(),
             module_id: None,
-            has_rules: false,
-            has_skill: false,
         }
     }
 }
@@ -356,32 +299,19 @@ mod tests {
         let builder = ModuleContextBuilder::new(&module);
         let prompt = builder.build_system_prompt();
 
-        // Check module name and responsibility
         assert!(prompt.contains("# Module: Authentication"));
         assert!(prompt.contains("Handle user authentication"));
-
-        // Check scope
         assert!(prompt.contains("src/auth/"));
         assert!(prompt.contains("src/security/"));
-
-        // Check dependencies
         assert!(prompt.contains("db"));
         assert!(prompt.contains("cache"));
-
-        // Check conventions
         assert!(prompt.contains("error-handling"));
         assert!(prompt.contains("Return Result types"));
-
-        // Check known issues
         assert!(prompt.contains("token-refresh"));
         assert!(prompt.contains("MEDIUM"));
         assert!(prompt.contains("retry with backoff"));
-
-        // Check evidence
         assert!(prompt.contains("@src/auth/mod.rs:1-50"));
         assert!(prompt.contains("@src/auth/session.rs:100"));
-
-        // Check scope enforcement
         assert!(prompt.contains("CRITICAL: Scope Enforcement"));
         assert!(prompt.contains("OUT_OF_SCOPE"));
     }
@@ -397,64 +327,12 @@ mod tests {
     }
 
     #[test]
-    fn test_builder_with_rules() {
-        use crate::agent::multi::rules::{
-            InjectionConfig, ResolvedRules, Rule, RuleCategory, RuleMetadata,
-        };
-        use std::path::PathBuf;
-
-        let module = create_test_module();
-        let mut rules = ResolvedRules::new();
-        rules.add(Rule::new(
-            RuleMetadata::new("rust-conventions", RuleCategory::Tech)
-                .with_injection(InjectionConfig::paths(vec!["**/*.rs".into()])),
-            "Use idiomatic Rust patterns".into(),
-            PathBuf::new(),
-        ));
-
-        let builder = ModuleContextBuilder::new(&module).with_rules(&rules);
-        let prompt = builder.build_system_prompt();
-
-        // Should have module section
-        assert!(prompt.contains("# Module: Authentication"));
-
-        // Should have rules section
-        assert!(prompt.contains("rust-conventions"));
-        assert!(prompt.contains("Use idiomatic Rust"));
-    }
-
-    #[test]
-    fn test_builder_with_skill() {
-        use crate::agent::multi::skills::{Skill, SkillType};
-        use std::path::PathBuf;
-
-        let module = create_test_module();
-        let skill = Skill {
-            skill_type: SkillType::Implement,
-            methodology: "# Implementation Methodology\n\nFollow TDD approach.".into(),
-            source_path: PathBuf::new(),
-        };
-
-        let builder = ModuleContextBuilder::new(&module).with_skill(&skill);
-        let prompt = builder.build_system_prompt();
-
-        // Should have module section
-        assert!(prompt.contains("# Module: Authentication"));
-
-        // Should have skill section
-        assert!(prompt.contains("Implementation Methodology"));
-        assert!(prompt.contains("TDD approach"));
-    }
-
-    #[test]
     fn test_module_context_from_builder() {
         let module = create_test_module();
         let builder = ModuleContextBuilder::new(&module);
         let ctx = ModuleContext::from_builder(&builder);
 
         assert_eq!(ctx.module_id, Some("auth".into()));
-        assert!(!ctx.has_rules);
-        assert!(!ctx.has_skill);
         assert!(!ctx.system_prompt.is_empty());
     }
 
@@ -491,10 +369,7 @@ mod tests {
         let builder = ModuleContextBuilder::new(&module).with_manifest_context(&manifest_ctx);
         let prompt = builder.build_system_prompt();
 
-        // Should have module section
         assert!(prompt.contains("# Module: Authentication"));
-
-        // Should have manifest context section
         assert!(prompt.contains("# Module Context (Manifest)"));
         assert!(prompt.contains("rules/modules/auth.md"));
         assert!(prompt.contains("Use bcrypt for password hashing"));
@@ -509,10 +384,7 @@ mod tests {
         let builder = ModuleContextBuilder::new(&module).with_manifest_context(&manifest_ctx);
         let prompt = builder.build_system_prompt();
 
-        // Should have module section
         assert!(prompt.contains("# Module: Authentication"));
-
-        // Should NOT have manifest context section (empty)
         assert!(!prompt.contains("# Module Context (Manifest)"));
     }
 }

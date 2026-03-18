@@ -17,7 +17,7 @@ static ERROR_CODE_PATTERN: OnceLock<Regex> = OnceLock::new();
 fn error_code_pattern() -> &'static Regex {
     ERROR_CODE_PATTERN.get_or_init(|| {
         // Match any alphanumeric error code pattern: XX0000, XXX0000, etc.
-        Regex::new(r"[A-Z]{1,5}\d{3,5}").unwrap()
+        Regex::new(r"[A-Z]{1,5}\d{3,5}").expect("static error code regex must compile")
     })
 }
 

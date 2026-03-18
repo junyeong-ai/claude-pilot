@@ -16,7 +16,7 @@ mod retry_analyzer;
 mod types;
 
 pub use analyzer::FailureAnalyzer;
-pub use checkpoint::{Checkpoint, CheckpointManager};
+pub use checkpoint::{MissionCheckpoint, MissionCheckpointManager};
 pub use escalation::{
     AttemptedStrategy, EscalationContext, EscalationHandler, EscalationStatus, EscalationUrgency,
     HumanAction, HumanResponse, StrategyOutcome,

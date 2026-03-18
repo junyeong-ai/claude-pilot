@@ -1,6 +1,6 @@
 use claude_pilot::MissionState;
 use claude_pilot::mission::{
-    IsolationMode, Learning, LearningCategory, Mission, Priority, Task, TaskStatus,
+    IsolationMode, Learning, LearningCategory, Mission, MissionPriority, Task, TaskStatus,
 };
 
 #[test]
@@ -18,11 +18,11 @@ fn test_mission_creation() {
 fn test_mission_with_builders() {
     let mission = Mission::new("m-002", "Refactor database layer")
         .with_isolation(IsolationMode::Worktree)
-        .with_priority(Priority::P1)
+        .with_priority(MissionPriority::P1)
         .with_base_branch("develop");
 
     assert_eq!(mission.isolation, IsolationMode::Worktree);
-    assert!(matches!(mission.priority, Priority::P1));
+    assert!(matches!(mission.priority, MissionPriority::P1));
     assert_eq!(mission.base_branch, "develop");
 }
 
@@ -117,10 +117,10 @@ fn test_mission_status_transitions() {
     assert!(!MissionState::Failed.can_resume());
     assert!(!MissionState::Completed.can_resume());
 
-    assert!(MissionState::Failed.can_retry());
-    assert!(MissionState::Cancelled.can_retry());
-    assert!(!MissionState::Paused.can_retry());
-    assert!(!MissionState::Completed.can_retry());
+    assert!(MissionState::Failed.can_create_retry_mission());
+    assert!(MissionState::Cancelled.can_create_retry_mission());
+    assert!(!MissionState::Paused.can_create_retry_mission());
+    assert!(!MissionState::Completed.can_create_retry_mission());
 }
 
 #[test]
@@ -164,9 +164,9 @@ fn test_isolation_mode_display() {
 fn test_priority_from_str() {
     use std::str::FromStr;
 
-    assert!(matches!(Priority::from_str("p1").unwrap(), Priority::P1));
-    assert!(matches!(Priority::from_str("P2").unwrap(), Priority::P2));
-    assert!(matches!(Priority::from_str("high").unwrap(), Priority::P1));
-    assert!(matches!(Priority::from_str("low").unwrap(), Priority::P3));
-    assert!(Priority::from_str("invalid").is_err());
+    assert!(matches!(MissionPriority::from_str("p1").unwrap(), MissionPriority::P1));
+    assert!(matches!(MissionPriority::from_str("P2").unwrap(), MissionPriority::P2));
+    assert!(matches!(MissionPriority::from_str("high").unwrap(), MissionPriority::P1));
+    assert!(matches!(MissionPriority::from_str("low").unwrap(), MissionPriority::P3));
+    assert!(MissionPriority::from_str("invalid").is_err());
 }

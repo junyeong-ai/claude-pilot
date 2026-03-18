@@ -8,17 +8,17 @@ mod fixtures;
 
 use std::sync::Arc;
 
-use claude_pilot::agent::multi::context::{ContextComposer, PersonaLoader};
 use claude_pilot::agent::multi::messaging::{
-    AgentMessage, AgentMessageBus, MessagePayload, MessageType,
+    AgentMessage, AgentMessageBus, AgentMessageType, MessagePayload,
 };
-use claude_pilot::agent::multi::rules::RuleRegistry;
-use claude_pilot::agent::multi::skills::{SkillRegistry, SkillType};
+use claude_pilot::agent::multi::shared::ConsensusOutcome;
 use claude_pilot::agent::multi::{
-    AgentPoolBuilder, AgentRole, AgentTask, Coordinator, RoleCategory, TaskContext, TaskPriority,
+    AgentPoolBuilder, Coordinator,
 };
 use claude_pilot::config::MultiAgentConfig;
-use claude_pilot::state::{DomainEvent, EventPayload, EventStore, RoundOutcome, VoteDecision};
+use claude_pilot::agent::multi::consensus::ResolutionStrategy;
+use claude_pilot::domain::{RoundOutcome, VoteDecision};
+use claude_pilot::state::{DomainEvent, EventStore};
 
 use fixtures::mock_agent::{MockTaskAgentBuilder, ResponseScenario};
 use fixtures::project::{ErrorType, TestProjectBuilder, TestProjectFixture};
@@ -282,7 +282,7 @@ mod scenario_consensus {
 
 mod scenario_escalation {
     use super::*;
-    use claude_pilot::agent::multi::escalation::EscalationLevel;
+    use claude_pilot::domain::EscalationLevel;
 
     #[tokio::test]
     async fn test_escalation_events() {
@@ -323,7 +323,7 @@ mod scenario_escalation {
                 "mission-1",
                 1,
                 2,
-                "consensus_reached",
+                ConsensusOutcome::Converged,
             ))
             .await
             .unwrap();
@@ -339,7 +339,7 @@ mod scenario_escalation {
 
 mod scenario_conflict {
     use super::*;
-    use claude_pilot::agent::multi::consensus::ConflictSeverity;
+    use claude_pilot::domain::Severity;
 
     #[tokio::test]
     async fn test_conflict_detection_and_resolution() {
@@ -355,7 +355,7 @@ mod scenario_conflict {
                 1,
                 "conflict-1",
                 vec!["domain-auth".into(), "domain-api".into()],
-                ConflictSeverity::Moderate,
+                Severity::Warning,
             ))
             .await
             .unwrap();
@@ -365,7 +365,7 @@ mod scenario_conflict {
             .append(DomainEvent::consensus_conflict_resolved(
                 "mission-1",
                 "conflict-1",
-                "merge_proposals",
+                ResolutionStrategy::Compromise,
             ))
             .await
             .unwrap();
@@ -394,22 +394,15 @@ mod scenario_dynamic_agent {
             .append(DomainEvent::agent_spawned(
                 "mission-1",
                 "domain-plugin-0",
-                "domain",
+                claude_pilot::agent::multi::identity::RoleType::DomainCoordinator("plugin".into()),
                 Some("plugin"),
             ))
             .await
             .unwrap();
 
-        // Agent participates
+        // Agent starts a task
         store
-            .append(DomainEvent::new(
-                "mission-1",
-                EventPayload::AgentTaskAssigned {
-                    agent_id: "domain-plugin-0".into(),
-                    task_id: "task-1".into(),
-                    role: "domain".into(),
-                },
-            ))
+            .append(DomainEvent::task_started("mission-1", "task-1", "Plugin integration"))
             .await
             .unwrap();
 
@@ -419,10 +412,10 @@ mod scenario_dynamic_agent {
         verifier.assert_agent_participated("domain-plugin-0");
         verifier.assert_sequence(&[
             EventPattern::AgentSpawned {
-                role: "domain".into(),
+                role: claude_pilot::agent::multi::identity::RoleType::DomainCoordinator("plugin".into()),
             },
-            EventPattern::TaskAssigned {
-                agent: "domain-plugin-0".into(),
+            EventPattern::TaskStarted {
+                task_id: "task-1".into(),
             },
         ]);
 
@@ -451,7 +444,7 @@ mod scenario_messaging {
         let msg = AgentMessage::new(
             "coordinator",
             "coder-0",
-            MessagePayload::Text {
+            MessagePayload::Broadcast {
                 content: "implement feature".into(),
             },
         );
@@ -460,7 +453,7 @@ mod scenario_messaging {
         // Broadcast announcement
         let broadcast = AgentMessage::broadcast(
             "coordinator",
-            MessagePayload::Text {
+            MessagePayload::Broadcast {
                 content: "mission started".into(),
             },
         );
@@ -486,6 +479,7 @@ mod scenario_messaging {
 
         let vote = AgentMessage::consensus_vote(
             "reviewer-0",
+            "coordinator",
             1,
             VoteDecision::Approve,
             "looks good".into(),
@@ -496,73 +490,7 @@ mod scenario_messaging {
         assert!(received.is_some());
         let msg = received.unwrap();
         assert_eq!(msg.from, "reviewer-0");
-        assert_eq!(msg.message_type(), MessageType::ConsensusVote);
-    }
-}
-
-mod scenario_context_composition {
-    use super::*;
-    use std::path::PathBuf;
-
-    #[tokio::test]
-    async fn test_skill_selection_for_coder() {
-        let rules = RuleRegistry::new(PathBuf::new());
-        let skills = SkillRegistry::default();
-        let personas = PersonaLoader::default();
-        let composer = ContextComposer::new(&rules, &skills, &personas);
-
-        let role = AgentRole {
-            id: "coder".into(),
-            category: RoleCategory::Core,
-        };
-
-        // Debug task should select Debug skill
-        let task = AgentTask {
-            id: "task-1".into(),
-            description: "Debug the authentication issue".into(),
-            context: TaskContext::default(),
-            priority: TaskPriority::Normal,
-            role: Some(role.clone()),
-        };
-
-        let ctx = composer.compose(&role, &task, &[]);
-        assert_eq!(ctx.active_skill, Some(SkillType::Debug));
-
-        // Refactor task should select Refactor skill
-        let task = AgentTask {
-            id: "task-2".into(),
-            description: "Refactor the user module".into(),
-            context: TaskContext::default(),
-            priority: TaskPriority::Normal,
-            role: Some(role.clone()),
-        };
-
-        let ctx = composer.compose(&role, &task, &[]);
-        assert_eq!(ctx.active_skill, Some(SkillType::Refactor));
-    }
-
-    #[tokio::test]
-    async fn test_reviewer_gets_code_review_skill() {
-        let rules = RuleRegistry::new(PathBuf::new());
-        let skills = SkillRegistry::default();
-        let personas = PersonaLoader::default();
-        let composer = ContextComposer::new(&rules, &skills, &personas);
-
-        let role = AgentRole {
-            id: "reviewer".into(),
-            category: RoleCategory::Core,
-        };
-
-        let task = AgentTask {
-            id: "task-1".into(),
-            description: "Review the changes".into(),
-            context: TaskContext::default(),
-            priority: TaskPriority::Normal,
-            role: Some(role.clone()),
-        };
-
-        let ctx = composer.compose(&role, &task, &[]);
-        assert_eq!(ctx.active_skill, Some(SkillType::CodeReview));
+        assert_eq!(msg.message_type(), AgentMessageType::ConsensusVote);
     }
 }
 
@@ -673,21 +601,18 @@ mod integration {
             .append(DomainEvent::agent_spawned(
                 mission_id,
                 "research-0",
-                "research",
+                claude_pilot::agent::multi::identity::RoleType::Research,
                 None,
             ))
             .await
             .unwrap();
         let _ = mock.run_prompt("research", fixture.path()).await;
         store
-            .append(DomainEvent::new(
+            .append(DomainEvent::task_completed(
                 mission_id,
-                EventPayload::AgentTaskCompleted {
-                    agent_id: "research-0".into(),
-                    task_id: "research-task".into(),
-                    success: true,
-                    duration_ms: 100,
-                },
+                "research-task",
+                vec![],
+                100,
             ))
             .await
             .unwrap();
@@ -709,34 +634,24 @@ mod integration {
                 mission_id,
                 1,
                 2,
-                "consensus_reached",
+                ConsensusOutcome::Converged,
             ))
             .await
             .unwrap();
 
         // Implementation phase
         store
-            .append(DomainEvent::new(
-                mission_id,
-                EventPayload::AgentTaskAssigned {
-                    agent_id: "coder-0".into(),
-                    task_id: "task-1".into(),
-                    role: "coder".into(),
-                },
-            ))
+            .append(DomainEvent::task_started(mission_id, "task-1", "Implement feature"))
             .await
             .unwrap();
 
         let _ = mock.run_prompt("coder", fixture.path()).await;
         store
-            .append(DomainEvent::new(
+            .append(DomainEvent::task_completed(
                 mission_id,
-                EventPayload::AgentTaskCompleted {
-                    agent_id: "coder-0".into(),
-                    task_id: "task-1".into(),
-                    success: true,
-                    duration_ms: 500,
-                },
+                "task-1",
+                vec!["src/feature.rs".into()],
+                500,
             ))
             .await
             .unwrap();
@@ -760,14 +675,16 @@ mod integration {
         // Check event sequence
         verifier.assert_sequence(&[
             EventPattern::AgentSpawned {
-                role: "research".into(),
+                role: claude_pilot::agent::multi::identity::RoleType::Research,
             },
             EventPattern::ConsensusRoundStarted { round: 1 },
             EventPattern::ConsensusCompleted { rounds: 1 },
-            EventPattern::TaskAssigned {
-                agent: "coder-0".into(),
+            EventPattern::TaskStarted {
+                task_id: "task-1".into(),
             },
-            EventPattern::TaskCompleted { success: true },
+            EventPattern::TaskCompleted {
+                task_id: "task-1".into(),
+            },
             EventPattern::VerificationRound { round: 1 },
             EventPattern::VerificationRound { round: 2 },
         ]);

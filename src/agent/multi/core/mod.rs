@@ -12,12 +12,13 @@ mod utils;
 
 pub use agent::{
     AgentCore, AgentMetrics, AgentPromptBuilder, AgentRole, BoxedAgent, LoadGuard, LoadTracker,
-    MetricsSnapshot, SpecializedAgent,
+    AgentExecutionMetrics, SpecializedAgent,
 };
 pub use result::{
-    AgentTaskResult, ArtifactType, ConvergenceResult, TaskArtifact, TaskStatus, VerificationVerdict,
+    AgentConvergenceResult, AgentTaskResult, ArtifactType, ExecutionOutcome, TaskArtifact, VerificationVerdict,
 };
 pub use task::{AgentTask, TaskContext};
 pub use utils::{
     calculate_priority_score, extract_field, extract_file_path, extract_files_from_output,
+    validate_workspace_path,
 };

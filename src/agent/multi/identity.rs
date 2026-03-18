@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+use super::shared::AgentId;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RoleType {
@@ -224,6 +226,32 @@ impl From<&str> for AgentIdentifier {
     }
 }
 
+// --- Bidirectional conversions between AgentId and AgentIdentifier ---
+
+impl From<AgentIdentifier> for AgentId {
+    fn from(id: AgentIdentifier) -> Self {
+        AgentId::new(id.qualified_id())
+    }
+}
+
+impl From<&AgentIdentifier> for AgentId {
+    fn from(id: &AgentIdentifier) -> Self {
+        AgentId::new(id.qualified_id())
+    }
+}
+
+impl From<AgentId> for AgentIdentifier {
+    fn from(id: AgentId) -> Self {
+        AgentIdentifier::from(id.as_str())
+    }
+}
+
+impl From<&AgentId> for AgentIdentifier {
+    fn from(id: &AgentId) -> Self {
+        AgentIdentifier::from(id.as_str())
+    }
+}
+
 impl AgentIdentifier {
     fn parse_role_instance(s: &str) -> Self {
         if let Some(pos) = s.rfind('-') {
@@ -318,5 +346,39 @@ mod tests {
 
         assert!(RoleType::GroupCoordinator("x".into()).is_coordinator());
         assert!(!RoleType::Coder.is_coordinator());
+    }
+
+    #[test]
+    fn test_agent_identifier_to_agent_id() {
+        let identifier = AgentIdentifier::planning(0);
+        let agent_id: AgentId = identifier.clone().into();
+        assert_eq!(agent_id.as_str(), "planning-0");
+
+        let identifier = AgentIdentifier::coder(2)
+            .in_workspace("ws-a")
+            .in_module("auth");
+        let agent_id: AgentId = (&identifier).into();
+        assert_eq!(agent_id.as_str(), "ws-a:auth:coder-2");
+    }
+
+    #[test]
+    fn test_agent_id_to_agent_identifier() {
+        let agent_id = AgentId::coder(1);
+        let identifier: AgentIdentifier = agent_id.clone().into();
+        assert_eq!(identifier.role, RoleType::Coder);
+        assert_eq!(identifier.instance, 1);
+        assert_eq!(identifier.workspace, None);
+
+        let identifier: AgentIdentifier = (&agent_id).into();
+        assert_eq!(identifier.role, RoleType::Coder);
+        assert_eq!(identifier.instance, 1);
+    }
+
+    #[test]
+    fn test_roundtrip_simple() {
+        let original = AgentIdentifier::research(3);
+        let agent_id: AgentId = original.clone().into();
+        let roundtrip: AgentIdentifier = agent_id.into();
+        assert_eq!(original, roundtrip);
     }
 }

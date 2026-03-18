@@ -1,42 +1,19 @@
 //! Shared types and contracts - foundation for all multi-agent modules.
 
+mod consensus;
 mod contracts;
-mod types;
+mod identity;
+mod module;
+mod priority;
 
-pub use contracts::{ApplyEvent, EventContext, ToEvent, ValidateMessage};
-pub use types::{
-    // Core types
-    AgentId,
-    // API/Type change tracking
-    ApiChange,
-    ApiChangeType,
-    ApiContract,
-    ConflictSeverity,
-    ConsensusOutcome,
-    ConstraintType,
-    ConvergenceCheckResult,
-    // Enhanced tier results
-    EnhancedTierResult,
-    // Global constraints (Phase 1)
-    GlobalConstraints,
-    PermissionProfile,
-    // Cross-workspace types
-    QualifiedModule,
-    Quorum,
-    RoleCategory,
-    RoundOutcome,
-    RuntimeConstraint,
-    // Semantic conflicts
-    SemanticConflict,
-    SemanticConflictType,
-    SessionStatus,
-    TaskComplexity,
-    TaskPriority,
-    TechDecision,
-    TierLevel,
-    TierResult,
-    TierTask,
-    TypeChange,
-    TypeChangeType,
-    VoteDecision,
+pub use consensus::{ConsensusOutcome, ConsensusSessionStatus, TierLevel, TierResult};
+pub use identity::{AgentId, RoleCategory};
+pub use module::PermissionProfile;
+pub use priority::{TaskComplexity, TaskPriority};
+
+pub(crate) use contracts::{
+    ApiChange, ApiChangeType, ApiContract, ConvergenceCheckResult,
+    GlobalConstraints, SemanticConflict, SemanticConflictType, TechDecision,
+    TypeChange, TypeChangeType,
 };
+pub(crate) use module::QualifiedModule;

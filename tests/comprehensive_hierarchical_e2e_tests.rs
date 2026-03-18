@@ -8,6 +8,8 @@
 //!
 //! Run with: cargo test --test comprehensive_hierarchical_e2e_tests -- --ignored --nocapture
 
+mod test_helpers;
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -17,14 +19,12 @@ use claude_pilot::agent::multi::hierarchy::{ConsensusStrategy, ParticipantSet, S
 use claude_pilot::agent::multi::messaging::AgentMessageBus;
 use claude_pilot::agent::multi::{
     AdaptiveConsensusExecutor, AgentPoolBuilder, CoderAgent, ConsensusEngine, Coordinator,
-    HierarchicalAggregator, PlanningAgent, ResearchAgent, ReviewerAgent, SpecializedAgent,
+    HierarchicalAggregator, PlanningAgent, ResearchAgent, SpecializedAgent,
     TaskContext, TierLevel, VerifierAgent,
 };
-use claude_pilot::config::{AgentConfig, ConsensusConfig, MultiAgentConfig};
-use claude_pilot::orchestration::AgentScope;
-use claude_pilot::state::EventStore;
+use claude_pilot::config::{ConsensusConfig, MultiAgentConfig};
+use claude_pilot::agent::multi::AgentScope;
 use claude_pilot::workspace::Workspace;
-use modmap::{Domain, Module, ModuleDependency, ModuleGroup, ModuleMetrics};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -322,197 +322,10 @@ pub fn send_notification(user_id: &str, message: &str) -> Result<(), String> {
     .unwrap();
 }
 
-/// Create modules for testing (simplified version without full ModuleMap).
-/// Note: Tests use Workspace directly with simplified module setup.
-#[allow(dead_code)]
-fn create_test_modules() -> Vec<Module> {
-    // Modules with correct modmap schema
-    let auth_module = Module {
-        id: "auth".to_string(),
-        name: "Authentication".to_string(),
-        paths: vec![
-            "src/auth/mod.rs".to_string(),
-            "src/auth/login.rs".to_string(),
-            "src/auth/session.rs".to_string(),
-        ],
-        key_files: vec!["src/auth/mod.rs".to_string()],
-        dependencies: vec![],
-        dependents: vec!["api".to_string()],
-        responsibility: "User authentication and session management".to_string(),
-        primary_language: "Rust".to_string(),
-        metrics: ModuleMetrics::default(),
-        conventions: vec![],
-        known_issues: vec![],
-        evidence: vec![],
-    };
-
-    let api_module = Module {
-        id: "api".to_string(),
-        name: "API Gateway".to_string(),
-        paths: vec![
-            "src/api/mod.rs".to_string(),
-            "src/api/routes.rs".to_string(),
-            "src/api/handlers.rs".to_string(),
-        ],
-        key_files: vec!["src/api/mod.rs".to_string()],
-        dependencies: vec![ModuleDependency::runtime("auth")],
-        dependents: vec![],
-        responsibility: "HTTP API gateway".to_string(),
-        primary_language: "Rust".to_string(),
-        metrics: ModuleMetrics::default(),
-        conventions: vec![],
-        known_issues: vec![],
-        evidence: vec![],
-    };
-
-    let database_module = Module {
-        id: "database".to_string(),
-        name: "Database".to_string(),
-        paths: vec![
-            "src/database/mod.rs".to_string(),
-            "src/database/models.rs".to_string(),
-        ],
-        key_files: vec!["src/database/mod.rs".to_string()],
-        dependencies: vec![],
-        dependents: vec!["billing".to_string()],
-        responsibility: "Database models and access".to_string(),
-        primary_language: "Rust".to_string(),
-        metrics: ModuleMetrics::default(),
-        conventions: vec![],
-        known_issues: vec![],
-        evidence: vec![],
-    };
-
-    let billing_module = Module {
-        id: "billing".to_string(),
-        name: "Billing".to_string(),
-        paths: vec![
-            "src/billing/mod.rs".to_string(),
-            "src/billing/invoices.rs".to_string(),
-        ],
-        key_files: vec!["src/billing/mod.rs".to_string()],
-        dependencies: vec![ModuleDependency::runtime("database")],
-        dependents: vec![],
-        responsibility: "Billing and invoice processing".to_string(),
-        primary_language: "Rust".to_string(),
-        metrics: ModuleMetrics::default(),
-        conventions: vec![],
-        known_issues: vec![],
-        evidence: vec![],
-    };
-
-    vec![auth_module, api_module, database_module, billing_module]
-}
-
-/// Create module groups for testing.
-#[allow(dead_code)]
-fn create_test_groups() -> Vec<ModuleGroup> {
-    vec![
-        ModuleGroup {
-            id: "core".to_string(),
-            name: "Core Services".to_string(),
-            module_ids: vec!["auth".to_string()],
-            responsibility: "Core authentication services".to_string(),
-            boundary_rules: vec![],
-            leader_module: Some("auth".to_string()),
-            parent_group_id: None,
-            domain_id: Some("security".to_string()),
-            depth: 0,
-        },
-        ModuleGroup {
-            id: "gateway".to_string(),
-            name: "Gateway Services".to_string(),
-            module_ids: vec!["api".to_string()],
-            responsibility: "API gateway services".to_string(),
-            boundary_rules: vec![],
-            leader_module: Some("api".to_string()),
-            parent_group_id: None,
-            domain_id: Some("infrastructure".to_string()),
-            depth: 0,
-        },
-        ModuleGroup {
-            id: "persistence".to_string(),
-            name: "Persistence Layer".to_string(),
-            module_ids: vec!["database".to_string()],
-            responsibility: "Data persistence".to_string(),
-            boundary_rules: vec![],
-            leader_module: Some("database".to_string()),
-            parent_group_id: None,
-            domain_id: Some("infrastructure".to_string()),
-            depth: 0,
-        },
-        ModuleGroup {
-            id: "commerce".to_string(),
-            name: "Commerce".to_string(),
-            module_ids: vec!["billing".to_string()],
-            responsibility: "Commerce and billing".to_string(),
-            boundary_rules: vec![],
-            leader_module: Some("billing".to_string()),
-            parent_group_id: None,
-            domain_id: Some("business".to_string()),
-            depth: 0,
-        },
-    ]
-}
-
-/// Create domains for testing.
-#[allow(dead_code)]
-fn create_test_domains() -> Vec<Domain> {
-    vec![
-        Domain {
-            id: "security".to_string(),
-            name: "Security Domain".to_string(),
-            group_ids: vec!["core".to_string()],
-            responsibility: "Security and authentication".to_string(),
-            boundary_rules: vec![],
-            interfaces: vec![],
-            owner: None,
-        },
-        Domain {
-            id: "infrastructure".to_string(),
-            name: "Infrastructure Domain".to_string(),
-            group_ids: vec!["gateway".to_string(), "persistence".to_string()],
-            responsibility: "Infrastructure services".to_string(),
-            boundary_rules: vec![],
-            interfaces: vec![],
-            owner: None,
-        },
-        Domain {
-            id: "business".to_string(),
-            name: "Business Domain".to_string(),
-            group_ids: vec!["commerce".to_string()],
-            responsibility: "Business logic".to_string(),
-            boundary_rules: vec![],
-            interfaces: vec![],
-            owner: None,
-        },
-    ]
-}
-
-/// Create TaskAgent with real LLM configuration (OAuth via Claude Code).
-fn create_task_agent() -> Arc<TaskAgent> {
-    let config = AgentConfig::default();
-    Arc::new(TaskAgent::new(config))
-}
-
-/// Create all specialized agents for comprehensive workflow.
 fn create_agents(task_agent: Arc<TaskAgent>) -> Vec<Arc<dyn SpecializedAgent>> {
-    vec![
-        ResearchAgent::with_id("research-0", Arc::clone(&task_agent)),
-        PlanningAgent::with_id("planning-0", Arc::clone(&task_agent)),
-        CoderAgent::with_id("coder-0", Arc::clone(&task_agent)),
-        CoderAgent::with_id("coder-1", Arc::clone(&task_agent)),
-        VerifierAgent::with_id("verifier-0", Arc::clone(&task_agent)),
-        ReviewerAgent::with_id("reviewer-0", Arc::clone(&task_agent)),
-    ]
-}
-
-/// Setup event store for tracking.
-fn setup_event_store(project_dir: &Path) -> Arc<EventStore> {
-    let events_dir = project_dir.join(".pilot/events");
-    std::fs::create_dir_all(&events_dir).unwrap();
-    let db_path = events_dir.join("events.db");
-    Arc::new(EventStore::new(&db_path).unwrap())
+    let mut agents = test_helpers::create_core_agents(Arc::clone(&task_agent));
+    agents.push(CoderAgent::with_id("coder-1", task_agent));
+    agents
 }
 
 /// Create a Workspace from the multi-module test project for adaptive consensus.
@@ -808,6 +621,7 @@ async fn test_hierarchical_aggregator() {
             respondent_count: 1,
             conflicts: vec![],
             timed_out: false,
+            tasks: vec![],
             rounds: 2,
         },
         TierResult {
@@ -818,6 +632,7 @@ async fn test_hierarchical_aggregator() {
             respondent_count: 1,
             conflicts: vec![],
             timed_out: false,
+            tasks: vec![],
             rounds: 1,
         },
         TierResult {
@@ -828,6 +643,7 @@ async fn test_hierarchical_aggregator() {
             respondent_count: 1,
             conflicts: vec!["Migration strategy unclear".to_string()],
             timed_out: false,
+            tasks: vec![],
             rounds: 3,
         },
     ];
@@ -835,7 +651,7 @@ async fn test_hierarchical_aggregator() {
     aggregator.aggregate_tier(TierLevel::Module, module_results);
 
     // Verify module tier aggregation
-    let module_agg = aggregator.get_tier(TierLevel::Module).unwrap();
+    let module_agg = aggregator.tier(TierLevel::Module).unwrap();
     assert_eq!(module_agg.unit_results.len(), 3);
     assert!(!module_agg.is_fully_converged()); // One module didn't converge
     assert!(module_agg.is_partially_converged());
@@ -854,6 +670,7 @@ async fn test_hierarchical_aggregator() {
             respondent_count: 2,
             conflicts: vec![],
             timed_out: false,
+            tasks: vec![],
             rounds: 1,
         },
         TierResult {
@@ -864,6 +681,7 @@ async fn test_hierarchical_aggregator() {
             respondent_count: 2,
             conflicts: vec![],
             timed_out: false,
+            tasks: vec![],
             rounds: 2,
         },
     ];
@@ -871,7 +689,7 @@ async fn test_hierarchical_aggregator() {
     aggregator.aggregate_tier(TierLevel::Group, group_results);
 
     // Verify group tier aggregation
-    let group_agg = aggregator.get_tier(TierLevel::Group).unwrap();
+    let group_agg = aggregator.tier(TierLevel::Group).unwrap();
     assert!(group_agg.is_fully_converged());
     println!(
         "✓ Group tier: {}% converged",
@@ -931,8 +749,8 @@ async fn test_real_hierarchical_consensus_e2e() {
     let project_dir = temp_dir.path();
     create_multi_module_project(project_dir);
 
-    let event_store = setup_event_store(project_dir);
-    let task_agent = create_task_agent();
+    let event_store = test_helpers::setup_event_store(project_dir);
+    let task_agent = test_helpers::create_task_agent();
     let agents = create_agents(task_agent.clone());
 
     let mut config = MultiAgentConfig::default();
@@ -1049,7 +867,7 @@ async fn test_real_cross_module_evidence_gathering() {
     let project_dir = temp_dir.path();
     create_multi_module_project(project_dir);
 
-    let task_agent = create_task_agent();
+    let task_agent = test_helpers::create_task_agent();
     let research_agent = ResearchAgent::with_id("research-test", Arc::clone(&task_agent));
 
     let context = TaskContext {
@@ -1062,7 +880,7 @@ async fn test_real_cross_module_evidence_gathering() {
             "src/api/handlers.rs".to_string(),
             "src/database/models.rs".to_string(),
         ],
-        composed_prompt: None,
+        manifest_context: None,
     };
 
     let task = AgentTask {
@@ -1071,6 +889,7 @@ async fn test_real_cross_module_evidence_gathering() {
         context,
         priority: TaskPriority::High,
         role: Some(AgentRole::core_research()),
+
     };
 
     println!("\n=== Cross-Module Evidence Gathering Test ===");
@@ -1084,7 +903,7 @@ async fn test_real_cross_module_evidence_gathering() {
 
     match result {
         Ok(r) => {
-            println!("Research result: success={}", r.success);
+            println!("Research result: success={}", r.is_success());
             println!("Findings count: {}", r.findings.len());
             println!("\nEvidence gathered:");
             for finding in &r.findings {
@@ -1120,7 +939,7 @@ async fn test_real_planning_with_consensus_input() {
     let project_dir = temp_dir.path();
     create_multi_module_project(project_dir);
 
-    let task_agent = create_task_agent();
+    let task_agent = test_helpers::create_task_agent();
     let planning_agent = PlanningAgent::with_id("planning-test", Arc::clone(&task_agent));
 
     // Simulate consensus findings from multiple modules
@@ -1140,7 +959,7 @@ async fn test_real_planning_with_consensus_input() {
             "src/database/models.rs".to_string(),
             "src/billing/invoices.rs".to_string(),
         ],
-        composed_prompt: None,
+        manifest_context: None,
     };
 
     let task = AgentTask {
@@ -1149,6 +968,7 @@ async fn test_real_planning_with_consensus_input() {
         context,
         priority: TaskPriority::High,
         role: Some(AgentRole::core_planning()),
+
     };
 
     println!("\n=== Planning with Consensus Input Test ===");
@@ -1161,7 +981,7 @@ async fn test_real_planning_with_consensus_input() {
 
     match result {
         Ok(r) => {
-            println!("Planning result: success={}", r.success);
+            println!("Planning result: success={}", r.is_success());
             println!("\nGenerated Plan:");
             println!("{}", &r.output.chars().take(1000).collect::<String>());
 
@@ -1185,11 +1005,11 @@ async fn test_real_planning_with_consensus_input() {
 #[tokio::test]
 async fn test_agent_message_exchange() {
     use claude_pilot::agent::multi::messaging::{AgentMessage, MessagePayload};
-    use claude_pilot::state::VoteDecision;
+    use claude_pilot::domain::VoteDecision;
 
     let temp_dir = TempDir::new().unwrap();
     let project_dir = temp_dir.path();
-    let event_store = setup_event_store(project_dir);
+    let event_store = test_helpers::setup_event_store(project_dir);
 
     let message_bus = AgentMessageBus::default().with_event_store(event_store);
 
@@ -1224,7 +1044,7 @@ async fn test_agent_message_exchange() {
     // 2. Group coordinator broadcasts to all
     let broadcast = AgentMessage::broadcast(
         "group-core",
-        MessagePayload::Text {
+        MessagePayload::Broadcast {
             content: "Consensus reached: Token refresh implementation approved".to_string(),
         },
     );
@@ -1234,6 +1054,7 @@ async fn test_agent_message_exchange() {
     // 3. Another module votes using correct structure
     let vote = AgentMessage::consensus_vote(
         "module-api",
+        "group-coordinator-backend",
         1, // round
         VoteDecision::Approve,
         "Aligns with API security requirements".to_string(),
@@ -1262,7 +1083,7 @@ async fn test_real_coder_implementation_from_plan() {
     let project_dir = temp_dir.path();
     create_multi_module_project(project_dir);
 
-    let task_agent = create_task_agent();
+    let task_agent = test_helpers::create_task_agent();
     let coder_agent = CoderAgent::with_id("coder-test", Arc::clone(&task_agent));
 
     // Context includes planning output
@@ -1276,7 +1097,7 @@ async fn test_real_coder_implementation_from_plan() {
         ],
         blockers: vec![],
         related_files: vec!["src/database/models.rs".to_string()],
-        composed_prompt: None,
+        manifest_context: None,
     };
 
     let task = AgentTask {
@@ -1285,6 +1106,7 @@ async fn test_real_coder_implementation_from_plan() {
         context,
         priority: TaskPriority::Normal,
         role: Some(AgentRole::core_coder()),
+
     };
 
     println!("\n=== Coder Implementation Test ===");
@@ -1297,7 +1119,7 @@ async fn test_real_coder_implementation_from_plan() {
 
     match result {
         Ok(r) => {
-            println!("Coder result: success={}", r.success);
+            println!("Coder result: success={}", r.is_success());
 
             // Verify file was modified
             let content =
@@ -1328,8 +1150,8 @@ async fn test_real_full_multi_agent_workflow() {
     let project_dir = temp_dir.path();
     create_multi_module_project(project_dir);
 
-    let event_store = setup_event_store(project_dir);
-    let task_agent = create_task_agent();
+    let event_store = test_helpers::setup_event_store(project_dir);
+    let task_agent = test_helpers::create_task_agent();
     let agents = create_agents(task_agent.clone());
 
     let mut config = MultiAgentConfig::default();
@@ -1410,10 +1232,10 @@ async fn test_real_full_multi_agent_workflow() {
             for event in &events {
                 let category = match &event.payload {
                     claude_pilot::state::EventPayload::AgentSpawned { .. } => "Agent Spawn",
-                    claude_pilot::state::EventPayload::AgentTaskAssigned { .. } => {
+                    claude_pilot::state::EventPayload::TaskStarted { .. } => {
                         "Task Assignment"
                     }
-                    claude_pilot::state::EventPayload::AgentTaskCompleted { .. } => {
+                    claude_pilot::state::EventPayload::TaskCompleted { .. } => {
                         "Task Completion"
                     }
                     claude_pilot::state::EventPayload::ConsensusRoundStarted { .. } => {
@@ -1564,8 +1386,8 @@ async fn test_real_cross_workspace_consensus() {
     // For this test, we simulate a task that requires coordination between both projects
     // In a real scenario, you'd have a meta-coordinator orchestrating across workspaces
 
-    let task_agent = create_task_agent();
-    let event_store = setup_event_store(&project_a_dir);
+    let task_agent = test_helpers::create_task_agent();
+    let event_store = test_helpers::setup_event_store(&project_a_dir);
 
     // Create agents for both workspaces
     let agents: Vec<Arc<dyn SpecializedAgent>> = vec![

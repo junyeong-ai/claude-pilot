@@ -11,7 +11,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use super::hierarchy::AgentId;
+use super::shared::AgentId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -102,9 +102,11 @@ impl WorkspaceRegistry {
         self
     }
 
-    /// Register a workspace with its modules (stores module IDs as paths).
+    /// Register a workspace using module IDs as file path keys.
     ///
-    /// For proper file path mapping, prefer `register_with_paths` instead.
+    /// Convenience method primarily for tests that don't need per-file resolution.
+    /// Production code should prefer [`register_with_paths`](Self::register_with_paths)
+    /// which maps actual file paths for accurate cross-workspace detection.
     pub fn register(&self, workspace: WorkspaceInfo) {
         // Map root path and module IDs before moving workspace
         self.file_to_workspace

@@ -1,28 +1,18 @@
-//! 3-Phase Consensus Architecture
+//! Direction-Setting Consensus Phase
 //!
 //! Phase 1 (Direction Setting): Expert analysis -> GlobalConstraints
 //! - Actor: TaskAgent aggregator (single expert)
 //! - Output: Tech decisions, API contracts, runtime constraints
-//!
-//! Phase 2 (Planning Consensus): Planning agents -> Agreed plan + tasks
-//! - Actor: PLANNING AGENTS ONLY (filtered via role_filter: "planning")
-//! - Process: Hierarchical consensus with cross-visibility
-//! - Output: HierarchicalConsensusResult { plan, tasks }
-//!
-//! Phase 3 (Implementation): Coder agents -> Execute tasks
-//! - Actor: CODER AGENTS ONLY (routed via to_agent_task())
-//! - Input: Vec<ConsensusTask> from Phase 2
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::{debug, info};
 
-use super::PermissionProfile;
+use super::shared::PermissionProfile;
 use super::adaptive_consensus::ConsensusMission;
 use super::shared::{
-    ApiContract, GlobalConstraints, QualifiedModule, RuntimeConstraint, TechDecision,
+    ApiContract, GlobalConstraints, QualifiedModule, TechDecision,
 };
 use super::workspace_registry::WorkspaceRegistry;
 use crate::agent::TaskAgent;
@@ -35,7 +25,7 @@ use crate::error::Result;
 /// Executes Phase 1: Direction Setting (Top-Down).
 ///
 /// Establishes global constraints before module planners begin detailed planning.
-pub struct DirectionSettingPhase {
+pub(crate) struct DirectionSettingPhase {
     aggregator: Arc<TaskAgent>,
     workspace_registry: Option<Arc<WorkspaceRegistry>>,
 }
@@ -67,11 +57,11 @@ impl DirectionSettingPhase {
 
         // 1. Analyze mission for global decisions
         let analysis_prompt = self.build_analysis_prompt(mission, involved_modules);
-        let working_dir = std::env::current_dir().unwrap_or_default();
+        let working_dir = &mission.context.working_dir;
 
         let response = self
             .aggregator
-            .run_with_profile(&analysis_prompt, &working_dir, PermissionProfile::ReadOnly)
+            .run_with_profile(&analysis_prompt, working_dir, PermissionProfile::ReadOnly)
             .await?;
 
         // 2. Parse constraints from response
@@ -156,11 +146,11 @@ Respond with ONLY the JSON block."#,
             }
 
             for ac in parsed.api_contracts {
-                if let Some(provider) = QualifiedModule::from_qualified_string(&ac.provider) {
+                if let Ok(provider) = ac.provider.parse::<QualifiedModule>() {
                     let consumers: Vec<QualifiedModule> = ac
                         .consumers
                         .iter()
-                        .filter_map(|s| QualifiedModule::from_qualified_string(s))
+                        .filter_map(|s| s.parse().ok())
                         .collect();
 
                     constraints.add_api_contract(
@@ -228,20 +218,19 @@ Provide workspace-specific refinements (1-3 bullet points):
                 mission.description
             );
 
-            let working_dir = std::env::current_dir().unwrap_or_default();
             if let Ok(response) = self
                 .aggregator
                 .run_with_profile(
                     &refinement_prompt,
-                    &working_dir,
+                    &mission.context.working_dir,
                     PermissionProfile::ReadOnly,
                 )
                 .await
             {
                 for line in response.lines() {
                     let trimmed = line.trim();
-                    if trimmed.starts_with('-') || trimmed.starts_with('•') {
-                        let refinement = trimmed.trim_start_matches(['-', '•', ' ']);
+                    if trimmed.starts_with('-') || trimmed.starts_with('\u{2022}') {
+                        let refinement = trimmed.trim_start_matches(['-', '\u{2022}', ' ']);
                         if !refinement.is_empty() {
                             constraints.add_workspace_refinement(ws_name, refinement);
                         }
@@ -260,9 +249,6 @@ struct ConstraintAnalysis {
     tech_decisions: Vec<TechDecisionRaw>,
     #[serde(default)]
     api_contracts: Vec<ApiContractRaw>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    type_ownership: Vec<TypeOwnershipRaw>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -283,121 +269,24 @@ struct ApiContractRaw {
     specification: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct TypeOwnershipRaw {
-    #[allow(dead_code)]
-    type_name: String,
-    #[allow(dead_code)]
-    owner: String,
-}
-
 // ============================================================================
-// Phase 2: Synthesis with Backtracking
+// Direction-Setting Orchestrator
 // ============================================================================
 
-/// Context passed during Phase 2 synthesis rounds.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SynthesisContext {
-    pub constraints: GlobalConstraints,
-    pub round_number: usize,
-    pub peer_proposals: HashMap<String, ProposalSummary>,
-    pub detected_conflicts: Vec<String>,
-    pub backtrack_count: usize,
-}
-
-impl SynthesisContext {
-    pub fn new(constraints: GlobalConstraints) -> Self {
-        Self {
-            constraints,
-            round_number: 0,
-            peer_proposals: HashMap::new(),
-            detected_conflicts: Vec::new(),
-            backtrack_count: 0,
-        }
-    }
-
-    pub fn next_round(&self) -> Self {
-        Self {
-            constraints: self.constraints.clone(),
-            round_number: self.round_number + 1,
-            peer_proposals: self.peer_proposals.clone(),
-            detected_conflicts: Vec::new(),
-            backtrack_count: self.backtrack_count,
-        }
-    }
-
-    pub fn with_peer_proposal(&mut self, agent_id: impl Into<String>, summary: ProposalSummary) {
-        self.peer_proposals.insert(agent_id.into(), summary);
-    }
-
-    pub fn with_conflict(&mut self, description: impl Into<String>) {
-        self.detected_conflicts.push(description.into());
-    }
-
-    pub fn increment_backtrack(&mut self) {
-        self.backtrack_count += 1;
-    }
-}
-
-/// Summary of a proposal for cross-visibility.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProposalSummary {
-    pub agent_id: String,
-    pub module: QualifiedModule,
-    pub approach: String,
-    pub api_changes: Vec<String>,
-    pub dependencies_used: Vec<String>,
-    pub dependencies_provided: Vec<String>,
-}
-
-impl ProposalSummary {
-    pub fn new(agent_id: impl Into<String>, module: QualifiedModule) -> Self {
-        Self {
-            agent_id: agent_id.into(),
-            module,
-            approach: String::new(),
-            api_changes: Vec::new(),
-            dependencies_used: Vec::new(),
-            dependencies_provided: Vec::new(),
-        }
-    }
-
-    pub fn with_approach(mut self, approach: impl Into<String>) -> Self {
-        self.approach = approach.into();
-        self
-    }
-
-    pub fn with_api_changes(mut self, changes: Vec<String>) -> Self {
-        self.api_changes = changes;
-        self
-    }
-}
-
-// ============================================================================
-// Two-Phase Orchestrator
-// ============================================================================
-
-/// Orchestrates two-phase consensus execution.
-pub struct TwoPhaseOrchestrator {
+/// Orchestrates direction-setting phase for consensus execution.
+pub(crate) struct TwoPhaseOrchestrator {
     direction_phase: DirectionSettingPhase,
-    max_backtracks: usize,
 }
 
 impl TwoPhaseOrchestrator {
     pub fn new(aggregator: Arc<TaskAgent>) -> Self {
         Self {
             direction_phase: DirectionSettingPhase::new(aggregator),
-            max_backtracks: 3,
         }
     }
 
     pub fn with_workspace_registry(mut self, registry: Arc<WorkspaceRegistry>) -> Self {
         self.direction_phase = self.direction_phase.with_workspace_registry(registry);
-        self
-    }
-
-    pub fn with_max_backtracks(mut self, max: usize) -> Self {
-        self.max_backtracks = max;
         self
     }
 
@@ -410,193 +299,5 @@ impl TwoPhaseOrchestrator {
         self.direction_phase
             .execute(mission, involved_modules)
             .await
-    }
-
-    /// Create initial synthesis context for Phase 2.
-    pub fn create_synthesis_context(&self, constraints: GlobalConstraints) -> SynthesisContext {
-        SynthesisContext::new(constraints)
-    }
-
-    /// Check if backtracking is allowed.
-    pub fn can_backtrack(&self, context: &SynthesisContext) -> bool {
-        context.backtrack_count < self.max_backtracks
-    }
-
-    /// Generate constraint from conflict for backtracking.
-    pub fn conflict_to_constraint(
-        &self,
-        conflict_description: &str,
-        affected_modules: Vec<QualifiedModule>,
-    ) -> RuntimeConstraint {
-        RuntimeConstraint {
-            source: "backtrack_resolution".to_string(),
-            constraint_type: super::shared::ConstraintType::ApiNaming,
-            description: conflict_description.to_string(),
-            affected_modules,
-        }
-    }
-}
-
-// ============================================================================
-// Peer Summary Builder
-// ============================================================================
-
-/// Builds peer summaries for cross-tier visibility.
-pub struct PeerSummaryBuilder;
-
-impl PeerSummaryBuilder {
-    /// Build context string from peer summaries for upper tier.
-    pub fn build_peer_context(peers: &[ProposalSummary]) -> String {
-        if peers.is_empty() {
-            return String::new();
-        }
-
-        let mut context = String::from("## Peer Unit Summaries\n\n");
-
-        for peer in peers {
-            context.push_str(&format!(
-                "### {} ({})\n**Approach**: {}\n",
-                peer.agent_id,
-                peer.module.to_qualified_string(),
-                peer.approach
-            ));
-
-            if !peer.api_changes.is_empty() {
-                context.push_str("**API Changes**: ");
-                context.push_str(&peer.api_changes.join(", "));
-                context.push('\n');
-            }
-
-            if !peer.dependencies_provided.is_empty() {
-                context.push_str("**Provides**: ");
-                context.push_str(&peer.dependencies_provided.join(", "));
-                context.push('\n');
-            }
-
-            if !peer.dependencies_used.is_empty() {
-                context.push_str("**Uses**: ");
-                context.push_str(&peer.dependencies_used.join(", "));
-                context.push('\n');
-            }
-
-            context.push('\n');
-        }
-
-        context
-    }
-
-    /// Build constraints context string.
-    pub fn build_constraints_context(constraints: &GlobalConstraints) -> String {
-        let mut context = String::from("## Active Constraints\n\n");
-
-        if !constraints.tech_decisions.is_empty() {
-            context.push_str("### Technology Decisions\n");
-            for td in &constraints.tech_decisions {
-                context.push_str(&format!("- **{}**: {}\n", td.topic, td.decision));
-            }
-            context.push('\n');
-        }
-
-        if !constraints.api_contracts.is_empty() {
-            context.push_str("### API Contracts\n");
-            for ac in &constraints.api_contracts {
-                context.push_str(&format!(
-                    "- **{}**: provided by {}\n",
-                    ac.name,
-                    ac.provider.to_qualified_string()
-                ));
-            }
-            context.push('\n');
-        }
-
-        if !constraints.runtime_constraints.is_empty() {
-            context.push_str("### Runtime Constraints (from backtracking)\n");
-            for rc in &constraints.runtime_constraints {
-                context.push_str(&format!("- {}\n", rc.description));
-            }
-            context.push('\n');
-        }
-
-        context
-    }
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_synthesis_context_rounds() {
-        let constraints = GlobalConstraints::new();
-        let ctx = SynthesisContext::new(constraints);
-        assert_eq!(ctx.round_number, 0);
-
-        let ctx2 = ctx.next_round();
-        assert_eq!(ctx2.round_number, 1);
-    }
-
-    #[test]
-    fn test_synthesis_context_peer_proposals() {
-        let mut ctx = SynthesisContext::new(GlobalConstraints::new());
-        let module = QualifiedModule::new("ws", "mod");
-        let summary = ProposalSummary::new("agent-1", module).with_approach("Use JWT");
-
-        ctx.with_peer_proposal("agent-1", summary);
-        assert!(ctx.peer_proposals.contains_key("agent-1"));
-    }
-
-    #[test]
-    fn test_proposal_summary() {
-        let module = QualifiedModule::new("project-a", "auth");
-        let summary = ProposalSummary::new("planner-1", module)
-            .with_approach("Implement JWT validation")
-            .with_api_changes(vec!["AuthService.validate()".to_string()]);
-
-        assert_eq!(summary.approach, "Implement JWT validation");
-        assert_eq!(summary.api_changes.len(), 1);
-    }
-
-    #[test]
-    fn test_peer_summary_builder() {
-        let module = QualifiedModule::new("ws", "auth");
-        let summary = ProposalSummary::new("agent-1", module)
-            .with_approach("JWT auth")
-            .with_api_changes(vec!["validate()".to_string()]);
-
-        let context = PeerSummaryBuilder::build_peer_context(&[summary]);
-        assert!(context.contains("agent-1"));
-        assert!(context.contains("JWT auth"));
-        assert!(context.contains("validate()"));
-    }
-
-    #[test]
-    fn test_constraints_context_builder() {
-        let mut constraints = GlobalConstraints::new();
-        constraints.add_tech_decision(TechDecision::new("auth", "Use JWT"));
-
-        let context = PeerSummaryBuilder::build_constraints_context(&constraints);
-        assert!(context.contains("Technology Decisions"));
-        assert!(context.contains("Use JWT"));
-    }
-
-    #[test]
-    fn test_backtrack_limit() {
-        let orchestrator = TwoPhaseOrchestrator::new(Arc::new(crate::agent::TaskAgent::new(
-            crate::config::AgentConfig::default(),
-        )))
-        .with_max_backtracks(2);
-
-        let mut ctx = SynthesisContext::new(GlobalConstraints::new());
-        assert!(orchestrator.can_backtrack(&ctx));
-
-        ctx.increment_backtrack();
-        assert!(orchestrator.can_backtrack(&ctx));
-
-        ctx.increment_backtrack();
-        assert!(!orchestrator.can_backtrack(&ctx));
     }
 }

@@ -32,18 +32,18 @@ pub use artifacts::{PlanArtifact, SpecArtifact, TasksArtifact};
 pub use chunked::{ChunkedPlanner, MissionOutline, OutlinePhase};
 pub use complexity::{
     ComplexityEstimator, ComplexityExample, ComplexityExampleStore, ComplexityGate,
-    ComplexityResult, ComplexityTier, ComplexityTierValue, WorkspaceDetectionConfidence,
-    WorkspaceType,
+    ComplexityResult, ComplexityTier, WorkspaceDetectionConfidence, WorkspaceType,
 };
 pub use evidence::{
-    CodebaseAnalysis, DependencyAnalysis, Evidence, EvidenceCompleteness, EvidenceQualitySummary,
-    EvidenceSource, EvidenceSufficiency, ModuleTestMapping, PriorKnowledge, QualityAssessment,
+    CodebaseAnalysis, EvidenceCompleteness, EvidenceQualitySummary,
+    EvidenceSource, EvidenceSufficiency, ModuleTestMapping, QualityAssessment,
     QualityTier, RelevantFile, SourceConfidenceCategory, TestStructure,
 };
+pub use evidence::{DependencyAnalysis, Evidence, PriorKnowledge};
 pub use orchestrator::{PlanningOrchestrator, PlanningResult};
 pub use plan_agent::PlanAgent;
 pub use spec::SpecificationAgent;
 pub use task_quality::{TaskQualityResult, TaskQualityValidator};
-pub use task_scorer::{HistoricalTask, SimilarityCalculator, TaskScore, TaskScorer};
+pub use task_scorer::{HistoricalTask, SimilarityCalculator, TaskComplexityScore, TaskScorer};
 pub use tasks::TaskDecomposer;
 pub use validation::{PlanValidator, ValidationResult};

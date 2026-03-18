@@ -2,23 +2,19 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use tracing::{debug, warn};
 
-use super::hierarchy::AgentId;
+use super::shared::AgentId;
 use crate::error::{PilotError, Result};
 
-/// Default message TTL of 1 hour.
-/// This is intentionally longer than file lease duration (5 minutes) because:
-/// - Messages are for async negotiation between stateless agent invocations
-/// - Agents may not be invoked for extended periods in polling patterns
-/// - Failed message delivery can be retried within the TTL window
-const DEFAULT_TTL_SECS: u64 = 3600;
+use crate::config::MessagingConfig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -67,14 +63,29 @@ pub struct MessageStore {
     conn: Arc<Mutex<Connection>>,
     db_path: PathBuf,
     ttl: Duration,
+    cleanup_write_interval: u64,
+    write_count: AtomicU64,
 }
 
 impl MessageStore {
     pub fn new(db_path: impl AsRef<Path>) -> Result<Self> {
-        Self::with_ttl(db_path, Duration::from_secs(DEFAULT_TTL_SECS))
+        let config = MessagingConfig::default();
+        Self::with_options(
+            db_path,
+            Duration::from_secs(config.message_ttl_secs),
+            config.cleanup_write_interval,
+        )
     }
 
-    pub fn with_ttl(db_path: impl AsRef<Path>, ttl: Duration) -> Result<Self> {
+    pub fn with_config(db_path: impl AsRef<Path>, config: &MessagingConfig) -> Result<Self> {
+        Self::with_options(
+            db_path,
+            Duration::from_secs(config.message_ttl_secs),
+            config.cleanup_write_interval,
+        )
+    }
+
+    fn with_options(db_path: impl AsRef<Path>, ttl: Duration, cleanup_write_interval: u64) -> Result<Self> {
         let db_path = db_path.as_ref().to_path_buf();
 
         if let Some(parent) = db_path.parent() {
@@ -92,10 +103,15 @@ impl MessageStore {
             conn: Arc::new(Mutex::new(conn)),
             db_path,
             ttl,
+            cleanup_write_interval,
+            write_count: AtomicU64::new(0),
         })
     }
 
     fn init_schema(conn: &Connection) -> Result<()> {
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
+            .map_err(|e| PilotError::State(format!("Failed to set WAL mode: {}", e)))?;
+
         conn.execute_batch(
             r"
             CREATE TABLE IF NOT EXISTS messages (
@@ -157,6 +173,14 @@ impl MessageStore {
             "Message enqueued"
         );
 
+        let count = self.write_count.fetch_add(1, Ordering::Relaxed) + 1;
+        if self.cleanup_write_interval > 0 && count.is_multiple_of(self.cleanup_write_interval) {
+            drop(conn);
+            if let Err(e) = self.cleanup_expired() {
+                warn!("Failed to cleanup expired messages: {}", e);
+            }
+        }
+
         Ok(id)
     }
 
@@ -193,7 +217,8 @@ impl MessageStore {
             })
             .map_err(|e| PilotError::State(format!("Failed to query messages: {}", e)))?;
 
-        rows.collect::<std::result::Result<Vec<_>, _>>()
+        rows
+            .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| PilotError::State(format!("Failed to read messages: {}", e)))
     }
 
@@ -220,7 +245,7 @@ impl MessageStore {
         Ok(())
     }
 
-    pub fn get_response(&self, message_id: &str) -> Result<Option<String>> {
+    pub fn response(&self, message_id: &str) -> Result<Option<String>> {
         let conn = self.conn.lock();
         let result: Option<String> = conn
             .query_row(
@@ -283,6 +308,8 @@ impl Clone for MessageStore {
             conn: Arc::clone(&self.conn),
             db_path: self.db_path.clone(),
             ttl: self.ttl,
+            cleanup_write_interval: self.cleanup_write_interval,
+            write_count: AtomicU64::new(self.write_count.load(Ordering::Relaxed)),
         }
     }
 }
@@ -295,7 +322,7 @@ mod tests {
     fn temp_store() -> (TempDir, MessageStore) {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test_messages.db");
-        let store = MessageStore::with_ttl(&db_path, Duration::from_secs(60)).unwrap();
+        let store = MessageStore::new(&db_path).unwrap();
         (dir, store)
     }
 
@@ -334,7 +361,7 @@ mod tests {
 
         store.respond(&id, r#"{"accepted": true}"#).unwrap();
 
-        let response = store.get_response(&id).unwrap();
+        let response = store.response(&id).unwrap();
         assert!(response.is_some());
         assert!(response.unwrap().contains("accepted"));
     }

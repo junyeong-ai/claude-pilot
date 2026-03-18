@@ -4,7 +4,7 @@ use tokio::fs;
 use tracing::debug;
 
 use super::Mission;
-use crate::error::{PilotError, Result};
+use crate::error::{MissionError, Result};
 use crate::state::MissionState;
 
 pub struct MissionStore {
@@ -71,7 +71,7 @@ impl MissionStore {
     pub async fn load(&self, mission_id: &str) -> Result<Mission> {
         let path = self.mission_path(mission_id);
         if !path.exists() {
-            return Err(PilotError::MissionNotFound(mission_id.to_string()));
+            return Err(MissionError::NotFound(mission_id.to_string()).into());
         }
         let content = fs::read_to_string(&path).await?;
         let mission: Mission = serde_yaml_bw::from_str(&content)?;
@@ -116,7 +116,7 @@ impl MissionStore {
             .collect())
     }
 
-    pub async fn get_active(&self) -> Result<Vec<Mission>> {
+    pub async fn active_missions(&self) -> Result<Vec<Mission>> {
         let missions = self.list().await?;
         Ok(missions
             .into_iter()

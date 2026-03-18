@@ -80,10 +80,16 @@ impl OutputWriter {
     }
 
     fn write_json<T: Serialize>(&self, value: &T) {
-        if let Ok(json) = serde_json::to_string(value) {
-            let mut stdout = io::stdout().lock();
-            let _ = writeln!(stdout, "{}", json);
-            let _ = stdout.flush();
+        match serde_json::to_string(value) {
+            Ok(json) => {
+                let mut stdout = io::stdout().lock();
+                let _ = writeln!(stdout, "{}", json);
+                let _ = stdout.flush();
+            }
+            Err(e) => {
+                // eprintln: this is the output module, so use stderr directly (not tracing)
+                eprintln!("Error: failed to serialize output: {}", e);
+            }
         }
     }
 

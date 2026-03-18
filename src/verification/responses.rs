@@ -3,7 +3,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{IssueCategory, IssueSeverity};
+use super::IssueCategory;
+use crate::domain::Severity;
 
 /// Structured AI review response with checklist-based evaluation.
 /// Ensures systematic verification across all quality dimensions.
@@ -46,14 +47,6 @@ impl ReviewChecklist {
             .collect()
     }
 
-    pub fn failed_dimensions(&self) -> Vec<String> {
-        self.dimensions
-            .iter()
-            .filter(|(_, item)| !item.passed)
-            .map(|(name, _)| name.clone())
-            .collect()
-    }
-
     /// Returns failed dimensions with their full checklist items (including notes).
     /// This preserves the LLM's detailed reasoning for why each dimension failed.
     pub fn failed_items(&self) -> Vec<(&String, &ChecklistItem)> {
@@ -92,7 +85,7 @@ impl ChecklistItem {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AiReviewIssue {
-    pub severity: IssueSeverity,
+    pub severity: Severity,
     pub category: IssueCategory,
     pub message: String,
     #[serde(default)]

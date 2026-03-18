@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use super::message::{AgentMessage, MessageType};
+use super::message::{AgentMessage, AgentMessageType};
 use crate::error::Result;
 
 /// Handler response indicating how the message was processed.
@@ -33,7 +33,7 @@ pub trait MessageHandler: Send + Sync {
 
     /// Get the message types this handler is interested in.
     /// Return empty slice to receive all message types.
-    fn subscribed_types(&self) -> &[MessageType] {
+    fn subscribed_types(&self) -> &[AgentMessageType] {
         &[]
     }
 
@@ -133,7 +133,7 @@ mod tests {
 
     struct TestHandler {
         agent_id: String,
-        types: Vec<MessageType>,
+        types: Vec<AgentMessageType>,
     }
 
     impl MessageHandler for TestHandler {
@@ -141,7 +141,7 @@ mod tests {
             &self.agent_id
         }
 
-        fn subscribed_types(&self) -> &[MessageType] {
+        fn subscribed_types(&self) -> &[AgentMessageType] {
             &self.types
         }
 
@@ -173,7 +173,7 @@ mod tests {
     fn test_handler_filtering() {
         let handler = TestHandler {
             agent_id: "agent-1".to_string(),
-            types: vec![MessageType::ConsensusVote],
+            types: vec![AgentMessageType::ConsensusVote],
         };
 
         let vote_msg = AgentMessage::new(
@@ -181,7 +181,7 @@ mod tests {
             "agent-1",
             MessagePayload::ConsensusVote {
                 round: 1,
-                decision: crate::agent::multi::shared::VoteDecision::Approve,
+                decision: crate::domain::VoteDecision::Approve,
                 rationale: "vote".into(),
             },
         );
@@ -199,7 +199,7 @@ mod tests {
             "agent-2",
             MessagePayload::ConsensusVote {
                 round: 1,
-                decision: crate::agent::multi::shared::VoteDecision::Approve,
+                decision: crate::domain::VoteDecision::Approve,
                 rationale: "vote".into(),
             },
         );
@@ -225,7 +225,7 @@ mod tests {
 
         let broadcast = AgentMessage::broadcast(
             "coordinator",
-            MessagePayload::Text {
+            MessagePayload::Broadcast {
                 content: "hello".into(),
             },
         );

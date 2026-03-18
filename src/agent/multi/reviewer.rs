@@ -4,7 +4,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use modmap::{Convention, KnownIssue};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
@@ -14,7 +13,6 @@ use super::traits::{
 use crate::agent::TaskAgent;
 use crate::agent::multi::AgentIdentifier;
 use crate::error::Result;
-use crate::workspace::Workspace;
 
 const REVIEWER_SYSTEM_PROMPT: &str = r"You are a Code Reviewer Agent responsible for systematic quality assurance.
 
@@ -50,49 +48,6 @@ pub struct ReviewIssue {
     pub description: String,
 }
 
-/// Context for project-level review including conventions and known issues.
-#[derive(Debug, Clone, Default)]
-pub struct ProjectReviewContext {
-    pub conventions: Vec<ReviewConvention>,
-    pub known_issues: Vec<ReviewKnownIssue>,
-}
-
-/// Convention with module association for review context.
-#[derive(Debug, Clone)]
-pub struct ReviewConvention {
-    pub name: String,
-    pub pattern: String,
-    pub module: Option<String>,
-}
-
-impl From<&Convention> for ReviewConvention {
-    fn from(conv: &Convention) -> Self {
-        Self {
-            name: conv.name.clone(),
-            pattern: conv.pattern.clone(),
-            module: None,
-        }
-    }
-}
-
-/// Known issue with module association for review context.
-#[derive(Debug, Clone)]
-pub struct ReviewKnownIssue {
-    pub id: String,
-    pub description: String,
-    pub module: Option<String>,
-}
-
-impl From<&KnownIssue> for ReviewKnownIssue {
-    fn from(issue: &KnownIssue) -> Self {
-        Self {
-            id: issue.id.clone(),
-            description: issue.description.clone(),
-            module: None,
-        }
-    }
-}
-
 fn parse_issue_severity(s: &str) -> Option<IssueSeverity> {
     match s.to_uppercase().as_str() {
         "CRITICAL" => Some(IssueSeverity::Critical),
@@ -103,101 +58,19 @@ fn parse_issue_severity(s: &str) -> Option<IssueSeverity> {
     }
 }
 
-impl ProjectReviewContext {
-    pub fn from_workspace(workspace: &Workspace) -> Self {
-        let mut conventions = Vec::new();
-        let mut known_issues = Vec::new();
-
-        for module in workspace.modules() {
-            for conv in &module.conventions {
-                conventions.push(ReviewConvention {
-                    name: conv.name.clone(),
-                    pattern: conv.pattern.clone(),
-                    module: Some(module.name.clone()),
-                });
-            }
-
-            for issue in &module.known_issues {
-                known_issues.push(ReviewKnownIssue {
-                    id: issue.id.clone(),
-                    description: issue.description.clone(),
-                    module: Some(module.name.clone()),
-                });
-            }
-        }
-
-        Self {
-            conventions,
-            known_issues,
-        }
-    }
-
-    fn build_context_prompt(&self) -> String {
-        if self.conventions.is_empty() && self.known_issues.is_empty() {
-            return String::new();
-        }
-
-        let mut prompt = String::new();
-
-        if !self.conventions.is_empty() {
-            prompt.push_str("\n## Project Conventions\n");
-            for conv in &self.conventions {
-                if let Some(module) = &conv.module {
-                    prompt.push_str(&format!("- [{}] {}: {}\n", module, conv.name, conv.pattern));
-                } else {
-                    prompt.push_str(&format!("- {}: {}\n", conv.name, conv.pattern));
-                }
-            }
-        }
-
-        if !self.known_issues.is_empty() {
-            prompt.push_str("\n## Known Issues (Check for recurrence)\n");
-            for issue in &self.known_issues {
-                if let Some(module) = &issue.module {
-                    prompt.push_str(&format!("- [{}] {}\n", module, issue.description));
-                } else {
-                    prompt.push_str(&format!("- {}\n", issue.description));
-                }
-            }
-        }
-
-        prompt
-    }
-}
-
 pub struct ReviewerAgent {
     core: AgentCore,
-    context: ProjectReviewContext,
 }
 
 impl ReviewerAgent {
     pub fn new(id: impl Into<String>, task_agent: Arc<TaskAgent>) -> Self {
         Self {
             core: AgentCore::new(id, AgentRole::reviewer(), task_agent),
-            context: ProjectReviewContext::default(),
         }
     }
 
     pub fn with_id(id: &str, task_agent: Arc<TaskAgent>) -> Arc<Self> {
         Arc::new(Self::new(id, task_agent))
-    }
-
-    pub fn with_context(mut self, context: ProjectReviewContext) -> Self {
-        self.context = context;
-        self
-    }
-
-    pub fn set_context(&mut self, context: ProjectReviewContext) {
-        self.context = context;
-    }
-
-    fn full_system_prompt(&self) -> String {
-        let context_prompt = self.context.build_context_prompt();
-        if context_prompt.is_empty() {
-            REVIEWER_SYSTEM_PROMPT.to_string()
-        } else {
-            format!("{}\n{}", REVIEWER_SYSTEM_PROMPT, context_prompt)
-        }
     }
 
     fn parse_review_output(&self, output: &str, task_id: &str) -> AgentTaskResult {
@@ -345,11 +218,12 @@ impl SpecializedAgent for ReviewerAgent {
 
         debug!(task_id = %task.id, "Reviewer executing");
 
-        let system = task
-            .context
-            .composed_prompt
-            .clone()
-            .unwrap_or_else(|| self.full_system_prompt());
+        let system = match &task.context.manifest_context {
+            Some(ctx) if !ctx.is_empty() => {
+                format!("{}\n\n---\n\n{}", REVIEWER_SYSTEM_PROMPT, ctx)
+            }
+            _ => REVIEWER_SYSTEM_PROMPT.to_string(),
+        };
 
         let prompt = format!(
             "{}\n\n---\n\n## Review Task: {}\n\n{}",
@@ -376,7 +250,6 @@ impl SpecializedAgent for ReviewerAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use modmap::IssueCategory;
 
     #[test]
     fn test_reviewer_role() {
@@ -432,7 +305,7 @@ mod tests {
         let agent = ReviewerAgent::new("reviewer-test", task_agent);
 
         let result = agent.parse_review_output("PASS\n\nNo issues found.", "task-1");
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.findings.is_empty());
     }
 
@@ -444,70 +317,8 @@ mod tests {
         let output =
             "ISSUES\n[HIGH] src/auth.rs:42 - SQL injection\n[LOW] src/utils.rs:10 - Magic number";
         let result = agent.parse_review_output(output, "task-1");
-        assert!(!result.success);
+        assert!(!result.is_success());
         assert_eq!(result.findings.len(), 2);
-    }
-
-    #[test]
-    fn test_project_context_prompt() {
-        let context = ProjectReviewContext {
-            conventions: vec![ReviewConvention {
-                name: "error-handling".into(),
-                pattern: "Use Result<T, E> for fallible operations".into(),
-                module: Some("core".into()),
-            }],
-            known_issues: vec![ReviewKnownIssue {
-                id: "race-condition".into(),
-                description: "Race condition in session handling".into(),
-                module: Some("auth".into()),
-            }],
-        };
-
-        let prompt = context.build_context_prompt();
-        assert!(prompt.contains("Project Conventions"));
-        assert!(prompt.contains("[core]"));
-        assert!(prompt.contains("Known Issues"));
-        assert!(prompt.contains("[auth]"));
-    }
-
-    #[test]
-    fn test_full_system_prompt_with_context() {
-        let task_agent = Arc::new(TaskAgent::new(Default::default()));
-        let context = ProjectReviewContext {
-            conventions: vec![ReviewConvention {
-                name: "naming".into(),
-                pattern: "Use snake_case".into(),
-                module: None,
-            }],
-            known_issues: vec![],
-        };
-        let agent = ReviewerAgent::new("reviewer-test", task_agent).with_context(context);
-
-        let prompt = agent.full_system_prompt();
-        assert!(prompt.contains("Code Reviewer Agent"));
-        assert!(prompt.contains("Project Conventions"));
-        assert!(prompt.contains("Use snake_case"));
-    }
-
-    #[test]
-    fn test_review_convention_from_modmap() {
-        let conv = Convention::new("test", "pattern");
-        let review_conv = ReviewConvention::from(&conv);
-        assert_eq!(review_conv.name, "test");
-        assert_eq!(review_conv.pattern, "pattern");
-    }
-
-    #[test]
-    fn test_review_known_issue_from_modmap() {
-        let issue = KnownIssue::new(
-            "test-id",
-            "Test description",
-            IssueSeverity::High,
-            IssueCategory::Security,
-        );
-        let review_issue = ReviewKnownIssue::from(&issue);
-        assert_eq!(review_issue.id, "test-id");
-        assert_eq!(review_issue.description, "Test description");
     }
 
     #[test]
@@ -519,7 +330,7 @@ mod tests {
         let output = "PASS\n\nHowever, I noticed:\n[MEDIUM] src/lib.rs:10 - Consider refactoring";
         let result = agent.parse_review_output(output, "task-1");
         assert!(
-            !result.success,
+            !result.is_success(),
             "Should fail when PASS is followed by severity markers"
         );
         assert_eq!(result.findings.len(), 1);
@@ -533,7 +344,7 @@ mod tests {
         // Edge case: no explicit PASS or ISSUES, just narrative
         let output = "Everything looks good! The code is well-structured.";
         let result = agent.parse_review_output(output, "task-1");
-        assert!(!result.success, "Should fail without explicit PASS");
+        assert!(!result.is_success(), "Should fail without explicit PASS");
     }
 
     #[test]
@@ -544,7 +355,7 @@ mod tests {
         // Standard ISSUES format
         let output = "ISSUES\n\n[HIGH] src/auth.rs:42 - Security issue";
         let result = agent.parse_review_output(output, "task-1");
-        assert!(!result.success);
+        assert!(!result.is_success());
         assert_eq!(result.findings.len(), 1);
     }
 
@@ -569,7 +380,7 @@ fn check_auth() -> Result<(), String> {
 No actual issues found."#;
         let result = agent.parse_review_output(output, "task-1");
         assert!(
-            result.success,
+            result.is_success(),
             "Should pass - severity markers in code blocks should be ignored"
         );
         assert!(
@@ -590,7 +401,7 @@ The previous review mentioned "[HIGH] src/auth.rs:42 - SQL injection"
 but this has now been fixed. No current issues."#;
         let result = agent.parse_review_output(output, "task-1");
         assert!(
-            result.success,
+            result.is_success(),
             "Should pass - quoted severity markers without proper format should be ignored"
         );
         assert!(result.findings.is_empty());
@@ -619,7 +430,7 @@ let query = format!("SELECT * FROM users WHERE id = {}", user_id);
 
 Please fix these issues."#;
         let result = agent.parse_review_output(output, "task-1");
-        assert!(!result.success);
+        assert!(!result.is_success());
         assert_eq!(
             result.findings.len(),
             2,
@@ -639,7 +450,7 @@ VERDICT: PASS
 
 Everything looks good!"#;
         let result = agent.parse_review_output(output, "task-1");
-        assert!(result.success, "Should recognize VERDICT: marker");
+        assert!(result.is_success(), "Should recognize VERDICT: marker");
         assert!(result.findings.is_empty());
     }
 
@@ -655,7 +466,7 @@ Note: There's a [MEDIUM] issue in the logging, but it's not urgent.
 Also, consider [HIGH] priority refactoring later."#;
         let result = agent.parse_review_output(output, "task-1");
         assert!(
-            result.success,
+            result.is_success(),
             "Malformed issues without file:line format should be ignored"
         );
         assert!(result.findings.is_empty());

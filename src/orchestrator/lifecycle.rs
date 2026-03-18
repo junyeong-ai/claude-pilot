@@ -10,7 +10,7 @@ use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
 use crate::config::OrchestratorConfig;
-use crate::error::{PilotError, Result};
+use crate::error::{MissionError, PilotError, Result};
 
 fn get_hostname() -> String {
     std::env::var("HOSTNAME")
@@ -19,14 +19,14 @@ fn get_hostname() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LockInfo {
+pub struct ProcessLockInfo {
     pub pid: u32,
     pub started_at: DateTime<Utc>,
     pub last_heartbeat: DateTime<Utc>,
     pub hostname: String,
 }
 
-impl Default for LockInfo {
+impl Default for ProcessLockInfo {
     fn default() -> Self {
         Self {
             pid: std::process::id(),
@@ -37,7 +37,7 @@ impl Default for LockInfo {
     }
 }
 
-impl LockInfo {
+impl ProcessLockInfo {
     pub fn new() -> Self {
         Self::default()
     }
@@ -130,15 +130,16 @@ impl LifecycleManager {
         for attempt in 0..self.retry_attempts {
             match self.try_acquire_lock(mission_id).await {
                 Ok(guard) => return Ok(guard),
-                Err(PilotError::MissionAlreadyRunning { .. }) => {
-                    return Err(PilotError::MissionAlreadyRunning {
+                Err(PilotError::Mission(MissionError::AlreadyRunning { .. })) => {
+                    return Err(MissionError::AlreadyRunning {
                         mission_id: mission_id.to_string(),
                         pid: self
                             .read_lock(mission_id)
                             .await?
                             .map(|l| l.pid)
                             .unwrap_or(0),
-                    });
+                    }
+                    .into());
                 }
                 Err(_) if attempt < self.retry_attempts - 1 => {
                     tokio::time::sleep(Duration::from_millis(
@@ -150,9 +151,10 @@ impl LifecycleManager {
             }
         }
 
-        Err(PilotError::LockAcquisitionFailed {
+        Err(MissionError::LockAcquisitionFailed {
             mission_id: mission_id.to_string(),
-        })
+        }
+        .into())
     }
 
     async fn try_acquire_lock(&self, mission_id: &str) -> Result<LockGuard> {
@@ -161,15 +163,16 @@ impl LifecycleManager {
 
         if let Some(existing) = self.read_lock(mission_id).await? {
             if existing.is_valid(self.stale_threshold) {
-                return Err(PilotError::MissionAlreadyRunning {
+                return Err(MissionError::AlreadyRunning {
                     mission_id: mission_id.to_string(),
                     pid: existing.pid,
-                });
+                }
+                .into());
             }
             info!(mission_id, old_pid = existing.pid, "Removing stale lock");
         }
 
-        let lock_info = LockInfo::new();
+        let lock_info = ProcessLockInfo::new();
         let content = serde_yaml_bw::to_string(&lock_info)?;
         fs::write(&temp_path, &content).await?;
 
@@ -189,7 +192,7 @@ impl LifecycleManager {
         }
     }
 
-    pub async fn read_lock(&self, mission_id: &str) -> Result<Option<LockInfo>> {
+    pub async fn read_lock(&self, mission_id: &str) -> Result<Option<ProcessLockInfo>> {
         let lock_path = self.lock_path(mission_id);
         match fs::read_to_string(&lock_path).await {
             Ok(content) => Ok(Some(serde_yaml_bw::from_str(&content)?)),
@@ -320,7 +323,7 @@ impl LockGuard {
 
     async fn update_heartbeat_file(lock_path: &Path) -> std::io::Result<()> {
         let content = tokio::fs::read_to_string(lock_path).await?;
-        let mut lock: LockInfo = serde_yaml_bw::from_str(&content)
+        let mut lock: ProcessLockInfo = serde_yaml_bw::from_str(&content)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
         lock.last_heartbeat = Utc::now();

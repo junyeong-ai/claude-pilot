@@ -22,57 +22,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use super::agent_context::AgentContext;
 use crate::agent::multi::AgentId;
-
-/// Input for agent invocation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InvocationInput {
-    /// Unique invocation ID.
-    pub invocation_id: String,
-    /// Agent being invoked.
-    pub agent_id: AgentId,
-    /// The prepared context for this invocation.
-    pub context: AgentContext,
-    /// Maximum tokens the agent can use for response.
-    pub max_response_tokens: u32,
-    /// Timeout for this invocation.
-    pub timeout_secs: u32,
-    /// Whether this is a retry of a previous invocation.
-    pub is_retry: bool,
-    /// Previous invocation ID if this is a retry.
-    pub previous_invocation_id: Option<String>,
-}
-
-impl InvocationInput {
-    pub fn new(invocation_id: String, agent_id: AgentId, context: AgentContext) -> Self {
-        Self {
-            invocation_id,
-            agent_id,
-            context,
-            max_response_tokens: 4096,
-            timeout_secs: 300, // 5 minutes
-            is_retry: false,
-            previous_invocation_id: None,
-        }
-    }
-
-    pub fn with_timeout(mut self, secs: u32) -> Self {
-        self.timeout_secs = secs;
-        self
-    }
-
-    pub fn with_max_tokens(mut self, tokens: u32) -> Self {
-        self.max_response_tokens = tokens;
-        self
-    }
-
-    pub fn as_retry(mut self, previous_id: &str) -> Self {
-        self.is_retry = true;
-        self.previous_invocation_id = Some(previous_id.to_string());
-        self
-    }
-}
 
 /// Result of an agent invocation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -622,36 +572,9 @@ pub struct InvocationStats {
     pub avg_duration: Duration,
 }
 
-/// Generate a unique invocation ID.
-pub fn generate_invocation_id(agent_id: &AgentId, task_id: Option<&str>) -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros();
-    match task_id {
-        Some(tid) => format!("inv-{}-{}-{}", agent_id.as_str(), tid, timestamp),
-        None => format!("inv-{}-{}", agent_id.as_str(), timestamp),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_invocation_input() {
-        let agent_id = AgentId::new("test-agent");
-        let context = AgentContext::new(agent_id.as_str(), "test-session");
-
-        let input = InvocationInput::new("inv-1".to_string(), agent_id.clone(), context)
-            .with_timeout(600)
-            .with_max_tokens(8192);
-
-        assert_eq!(input.timeout_secs, 600);
-        assert_eq!(input.max_response_tokens, 8192);
-        assert!(!input.is_retry);
-    }
 
     #[test]
     fn test_invocation_result_success() {
@@ -760,17 +683,6 @@ mod tests {
 
         let task_records = tracker.for_task("task-0");
         assert_eq!(task_records.len(), 3); // tasks 0, 2, 4
-    }
-
-    #[test]
-    fn test_generate_invocation_id() {
-        let agent_id = AgentId::new("agent-1");
-
-        let id1 = generate_invocation_id(&agent_id, Some("task-1"));
-        let id2 = generate_invocation_id(&agent_id, None);
-
-        assert!(id1.starts_with("inv-agent-1-task-1-"));
-        assert!(id1 != id2);
     }
 
     #[test]

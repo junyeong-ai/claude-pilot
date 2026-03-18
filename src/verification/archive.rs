@@ -88,7 +88,7 @@ impl TaskVerificationArchive {
 
         for entry in state
             .issue_registry
-            .persistent_issues(super::history::GlobalIssueRegistry::DEFAULT_PERSISTENT_THRESHOLD)
+            .persistent_issues(state.persistent_issue_threshold)
         {
             let pattern_type = if entry.resolved {
                 PatternType::SuccessfulFixStrategy
@@ -139,7 +139,7 @@ impl TaskVerificationArchive {
         let total_fixed = history.total_issues_fixed() as u32;
         let persistent_signatures: Vec<String> = state
             .issue_registry
-            .persistent_issues(super::history::GlobalIssueRegistry::DEFAULT_PERSISTENT_THRESHOLD)
+            .persistent_issues(state.persistent_issue_threshold)
             .iter()
             .map(|e| e.signature.clone())
             .collect();
@@ -379,10 +379,8 @@ impl VerificationArchive {
         }
     }
 
-    /// Default confidence threshold for promoting patterns to global patterns.
-    pub const DEFAULT_PATTERN_CONFIDENCE_THRESHOLD: f32 = 0.7;
-
-    /// Archive a task's verification results with default confidence threshold.
+    /// Archive a task's verification results with default confidence threshold
+    /// from `ConvergentVerificationConfig`.
     pub fn archive_task(
         &mut self,
         task_id: impl Into<String>,
@@ -390,12 +388,13 @@ impl VerificationArchive {
         state: &ConvergenceState,
         outcome: VerificationOutcome,
     ) {
+        use crate::config::ConvergentVerificationConfig;
         self.archive_task_with_threshold(
             task_id,
             history,
             state,
             outcome,
-            Self::DEFAULT_PATTERN_CONFIDENCE_THRESHOLD,
+            ConvergentVerificationConfig::default().pattern_confidence_threshold,
         );
     }
 
@@ -556,7 +555,8 @@ impl ArchiveStatistics {
 #[cfg(test)]
 mod tests {
     use super::super::history::{FixAttempt, VerificationRound};
-    use super::super::issue::{Issue, IssueSeverity};
+    use super::super::issue::Issue;
+    use crate::domain::Severity;
     use super::*;
 
     fn create_test_history() -> VerificationHistory {
@@ -565,7 +565,7 @@ mod tests {
 
         let issues = vec![Issue::new(
             IssueCategory::BuildError,
-            IssueSeverity::Error,
+            Severity::Error,
             "error[E0308]: type mismatch",
             TEST_CONFIDENCE,
         )];

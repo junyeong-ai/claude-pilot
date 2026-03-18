@@ -130,6 +130,8 @@ impl MissionSummary {
 
     pub fn add_learning(&mut self, learning: impl Into<String>, limits: &ContextLimitsConfig) {
         let l = learning.into();
+        // O(n) dedup is intentional: bounded by max_critical_learnings (default 5).
+        // HashSet hashing overhead exceeds linear scan at this size.
         if !self.critical_learnings.contains(&l) {
             if self.critical_learnings.len() >= limits.max_critical_learnings {
                 self.critical_learnings.pop_front();
@@ -140,6 +142,7 @@ impl MissionSummary {
 
     pub fn add_decision(&mut self, decision: impl Into<String>, limits: &ContextLimitsConfig) {
         let d = decision.into();
+        // O(n) dedup is intentional: bounded by max_key_decisions (default 3).
         if !self.key_decisions.contains(&d) {
             if self.key_decisions.len() >= limits.max_key_decisions {
                 self.key_decisions.pop_front();
@@ -150,6 +153,7 @@ impl MissionSummary {
 
     pub fn add_blocker(&mut self, blocker: impl Into<String>) {
         let b = blocker.into();
+        // O(n) dedup is intentional: blockers rarely exceed 10 items.
         if !self.blockers.contains(&b) {
             self.blockers.push(b);
         }
@@ -188,6 +192,7 @@ impl PhaseSummary {
 
     pub fn add_change(&mut self, change: impl Into<String>, limits: &ContextLimitsConfig) {
         let c = change.into();
+        // O(n) dedup is intentional: bounded by max_phase_changes (default 3).
         if !self.key_changes.contains(&c) && self.key_changes.len() < limits.max_phase_changes {
             self.key_changes.push(c);
         }
@@ -303,6 +308,7 @@ impl TaskEntry {
 
     pub fn add_file(&mut self, file: impl Into<String>) {
         let f = file.into();
+        // O(n) dedup is intentional: files per task rarely exceed 20.
         if !self.files_changed.contains(&f) {
             self.files_changed.push(f);
         }

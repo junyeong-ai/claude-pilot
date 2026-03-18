@@ -7,13 +7,13 @@ use super::artifacts::{
     AcceptanceScenario, Clarification, ClarificationOption, Requirement, SpecArtifact, UserStory,
 };
 use super::plan_agent::PlanAgent;
-use crate::config::{AgentConfig, EvidenceConfig, QualityConfig};
+use crate::config::{AgentConfig, EvidenceBudgetConfig, QualityConfig};
 use crate::error::Result;
-use crate::mission::Priority;
+use crate::mission::MissionPriority;
 
 pub struct SpecificationAgent {
     executor: PlanAgent,
-    evidence_config: EvidenceConfig,
+    evidence_config: EvidenceBudgetConfig,
     quality_config: QualityConfig,
 }
 
@@ -21,7 +21,7 @@ impl SpecificationAgent {
     pub fn with_config(
         working_dir: &Path,
         agent_config: &AgentConfig,
-        evidence_config: EvidenceConfig,
+        evidence_config: EvidenceBudgetConfig,
         quality_config: QualityConfig,
     ) -> crate::error::Result<Self> {
         Ok(Self {
@@ -106,7 +106,7 @@ Follow the evidence to align with existing patterns in the codebase.",
             user_stories: vec![UserStory {
                 id: "US1".to_string(),
                 title: description.chars().take(50).collect(),
-                priority: Priority::P1,
+                priority: MissionPriority::P1,
                 description: description.to_string(),
                 acceptance_scenarios: vec![AcceptanceScenario {
                     given: "the system is ready".to_string(),

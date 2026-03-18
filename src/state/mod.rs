@@ -20,7 +20,7 @@ fn state_err_with<E: std::fmt::Display>(context: &str, err: E) -> PilotError {
 
 pub use event_store::EventStore;
 pub use events::{
-    AggregateId, DomainEvent, EventFilter, EventId, EventPayload, RoundOutcome, VoteDecision,
+    AggregateId, DomainEvent, EventFilter, EventId, EventPayload,
 };
 pub use machine::{MissionState, StateTransition};
 pub use projections::{

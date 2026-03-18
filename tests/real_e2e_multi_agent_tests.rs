@@ -7,16 +7,17 @@
 //!
 //! WARNING: These tests make real API calls and will incur costs.
 
+mod test_helpers;
+
 use std::path::Path;
 use std::sync::Arc;
 
-use claude_pilot::agent::TaskAgent;
 use claude_pilot::agent::multi::messaging::AgentMessageBus;
 use claude_pilot::agent::multi::{
     AdaptiveConsensusExecutor, AgentPoolBuilder, CoderAgent, ConsensusEngine, Coordinator,
-    PlanningAgent, ResearchAgent, ReviewerAgent, SpecializedAgent, VerifierAgent,
+    ResearchAgent, SpecializedAgent, VerifierAgent,
 };
-use claude_pilot::config::{AgentConfig, ConsensusConfig, MultiAgentConfig};
+use claude_pilot::config::{ConsensusConfig, MultiAgentConfig};
 use claude_pilot::state::EventStore;
 use tempfile::TempDir;
 
@@ -61,30 +62,12 @@ mod tests {
     .unwrap();
 }
 
-/// Create TaskAgent with real LLM configuration.
-fn create_task_agent() -> Arc<TaskAgent> {
-    let config = AgentConfig::default();
-    Arc::new(TaskAgent::new(config))
-}
-
-/// Create all required agents for a complete workflow.
-fn create_agents(task_agent: Arc<TaskAgent>) -> Vec<Arc<dyn SpecializedAgent>> {
-    vec![
-        ResearchAgent::with_id("research-0", Arc::clone(&task_agent)),
-        PlanningAgent::with_id("planning-0", Arc::clone(&task_agent)),
-        CoderAgent::with_id("coder-0", Arc::clone(&task_agent)),
-        VerifierAgent::with_id("verifier-0", Arc::clone(&task_agent)),
-        ReviewerAgent::with_id("reviewer-0", Arc::clone(&task_agent)),
-    ]
-}
-
-/// Test helper to setup coordinator with all components.
 async fn setup_coordinator(
     _project_dir: &Path,
     event_store: Arc<EventStore>,
 ) -> claude_pilot::error::Result<Coordinator> {
-    let task_agent = create_task_agent();
-    let agents = create_agents(task_agent.clone());
+    let task_agent = test_helpers::create_task_agent();
+    let agents = test_helpers::create_core_agents(task_agent.clone());
 
     let mut config = MultiAgentConfig::default();
     config.enabled = true;
@@ -123,10 +106,7 @@ async fn test_real_simple_mission_execution() {
     let project_dir = temp_dir.path();
     create_test_project(project_dir);
 
-    let events_dir = project_dir.join(".pilot/events");
-    std::fs::create_dir_all(&events_dir).unwrap();
-    let db_path = events_dir.join("events.db");
-    let event_store = Arc::new(EventStore::new(&db_path).unwrap());
+    let event_store = test_helpers::setup_event_store(project_dir);
 
     let coordinator = setup_coordinator(project_dir, Arc::clone(&event_store))
         .await
@@ -156,7 +136,7 @@ async fn test_real_simple_mission_execution() {
             for (i, result) in mission_result.results.iter().enumerate() {
                 println!("\n--- Result {} ---", i + 1);
                 println!("Task ID: {}", result.task_id);
-                println!("Success: {}", result.success);
+                println!("Success: {}", result.is_success());
                 println!("Findings: {:?}", result.findings);
             }
 
@@ -201,13 +181,10 @@ async fn test_real_dynamic_consensus_mission() {
     let project_dir = temp_dir.path();
     create_test_project(project_dir);
 
-    let events_dir = project_dir.join(".pilot/events");
-    std::fs::create_dir_all(&events_dir).unwrap();
-    let db_path = events_dir.join("events.db");
-    let event_store = Arc::new(EventStore::new(&db_path).unwrap());
+    let event_store = test_helpers::setup_event_store(project_dir);
 
-    let task_agent = create_task_agent();
-    let agents = create_agents(task_agent.clone());
+    let task_agent = test_helpers::create_task_agent();
+    let agents = test_helpers::create_core_agents(task_agent.clone());
 
     let mut config = MultiAgentConfig::default();
     config.enabled = true;
@@ -307,10 +284,7 @@ pub fn add(a: i32, b: i32) -> i32 {
     )
     .unwrap();
 
-    let events_dir = project_dir.join(".pilot/events");
-    std::fs::create_dir_all(&events_dir).unwrap();
-    let db_path = events_dir.join("events.db");
-    let event_store = Arc::new(EventStore::new(&db_path).unwrap());
+    let event_store = test_helpers::setup_event_store(project_dir);
 
     let coordinator = setup_coordinator(project_dir, Arc::clone(&event_store))
         .await
@@ -378,10 +352,7 @@ async fn test_real_full_workflow_with_events() {
     let project_dir = temp_dir.path();
     create_test_project(project_dir);
 
-    let events_dir = project_dir.join(".pilot/events");
-    std::fs::create_dir_all(&events_dir).unwrap();
-    let db_path = events_dir.join("events.db");
-    let event_store = Arc::new(EventStore::new(&db_path).unwrap());
+    let event_store = test_helpers::setup_event_store(project_dir);
 
     let coordinator = setup_coordinator(project_dir, Arc::clone(&event_store))
         .await
@@ -418,12 +389,11 @@ async fn test_real_full_workflow_with_events() {
             for event in &events {
                 let phase = match &event.payload {
                     claude_pilot::state::EventPayload::AgentSpawned { .. } => "spawn",
-                    claude_pilot::state::EventPayload::AgentTaskAssigned { .. } => "assignment",
-                    claude_pilot::state::EventPayload::AgentTaskCompleted { .. } => "completion",
+                    claude_pilot::state::EventPayload::TaskStarted { .. } => "assignment",
+                    claude_pilot::state::EventPayload::TaskCompleted { .. } => "completion",
                     claude_pilot::state::EventPayload::VerificationRound { .. } => "verification",
                     claude_pilot::state::EventPayload::ConvergenceAchieved { .. } => "convergence",
-                    claude_pilot::state::EventPayload::RulesInjected { .. } => "rules",
-                    claude_pilot::state::EventPayload::SkillActivated { .. } => "skills",
+                    claude_pilot::state::EventPayload::ManifestContextInjected { .. } => "context",
                     _ => "other",
                 };
                 *phase_events.entry(phase).or_insert(0) += 1;
@@ -451,7 +421,7 @@ async fn test_real_full_workflow_with_events() {
 #[tokio::test]
 #[ignore = "Makes real API calls"]
 async fn test_task_agent_direct() {
-    let task_agent = create_task_agent();
+    let task_agent = test_helpers::create_task_agent();
     let project_dir = std::path::Path::new("/Users/a16801/Workspace/claude-pilot");
 
     println!("Testing TaskAgent.run_prompt directly...");
@@ -475,7 +445,7 @@ async fn test_task_agent_direct() {
 async fn test_research_agent_direct() {
     use claude_pilot::agent::multi::{AgentRole, AgentTask, TaskContext, TaskPriority};
 
-    let task_agent = create_task_agent();
+    let task_agent = test_helpers::create_task_agent();
     let research_agent = ResearchAgent::with_id("research-test", task_agent);
     let project_dir = std::path::Path::new("/Users/a16801/Workspace/claude-pilot");
 
@@ -485,7 +455,7 @@ async fn test_research_agent_direct() {
         key_findings: vec![],
         blockers: vec![],
         related_files: vec![],
-        composed_prompt: None,
+        manifest_context: None,
     };
 
     let task = AgentTask {
@@ -494,6 +464,7 @@ async fn test_research_agent_direct() {
         context,
         priority: TaskPriority::Normal,
         role: Some(AgentRole::core_research()),
+
     };
 
     println!("Testing ResearchAgent.execute directly...");
@@ -505,7 +476,7 @@ async fn test_research_agent_direct() {
 
     match result {
         Ok(r) => {
-            println!("Research result: success={}", r.success);
+            println!("Research result: success={}", r.is_success());
             println!(
                 "Output preview: {}...",
                 &r.output.chars().take(300).collect::<String>()
@@ -521,8 +492,8 @@ async fn test_research_agent_direct() {
 /// Test just agent pool creation (no LLM calls).
 #[tokio::test]
 async fn test_agent_pool_setup() {
-    let task_agent = create_task_agent();
-    let agents = create_agents(task_agent);
+    let task_agent = test_helpers::create_task_agent();
+    let agents = test_helpers::create_core_agents(task_agent);
 
     let config = MultiAgentConfig::default();
     let pool = AgentPoolBuilder::new(config)
@@ -551,7 +522,7 @@ async fn test_agent_pool_setup() {
 async fn test_coder_agent_direct() {
     use claude_pilot::agent::multi::{AgentRole, AgentTask, TaskContext, TaskPriority};
 
-    let task_agent = create_task_agent();
+    let task_agent = test_helpers::create_task_agent();
     let coder_agent = CoderAgent::with_id("coder-test", task_agent);
 
     // Use a temp directory with a simple file to modify
@@ -577,7 +548,7 @@ async fn test_coder_agent_direct() {
         key_findings: vec![],
         blockers: vec![],
         related_files: vec!["src/lib.rs".to_string()],
-        composed_prompt: None,
+        manifest_context: None,
     };
 
     let task = AgentTask {
@@ -587,6 +558,7 @@ async fn test_coder_agent_direct() {
         context,
         priority: TaskPriority::Normal,
         role: Some(AgentRole::core_coder()),
+
     };
 
     println!("Testing CoderAgent.execute directly...");
@@ -598,7 +570,7 @@ async fn test_coder_agent_direct() {
 
     match result {
         Ok(r) => {
-            println!("Coder result: success={}", r.success);
+            println!("Coder result: success={}", r.is_success());
             println!(
                 "Output preview: {}...",
                 &r.output.chars().take(300).collect::<String>()
@@ -624,7 +596,7 @@ async fn test_coder_agent_direct() {
 async fn test_verifier_agent_direct() {
     use claude_pilot::agent::multi::{AgentRole, AgentTask, TaskContext, TaskPriority};
 
-    let task_agent = create_task_agent();
+    let task_agent = test_helpers::create_task_agent();
     let verifier_agent = VerifierAgent::with_id("verifier-test", task_agent);
 
     // Use a temp directory with valid Rust code
@@ -657,7 +629,7 @@ mod tests {
         key_findings: vec![],
         blockers: vec![],
         related_files: vec!["src/lib.rs".to_string()],
-        composed_prompt: None,
+        manifest_context: None,
     };
 
     let task = AgentTask {
@@ -666,6 +638,7 @@ mod tests {
         context,
         priority: TaskPriority::High,
         role: Some(AgentRole::core_verifier()),
+
     };
 
     println!("Testing VerifierAgent.execute directly...");
@@ -677,7 +650,7 @@ mod tests {
 
     match result {
         Ok(r) => {
-            println!("Verifier result: success={}", r.success);
+            println!("Verifier result: success={}", r.is_success());
             println!(
                 "Output preview: {}...",
                 &r.output.chars().take(300).collect::<String>()

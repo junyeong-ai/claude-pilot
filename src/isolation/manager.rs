@@ -186,7 +186,7 @@ impl IsolationManager {
         Ok(())
     }
 
-    pub async fn get_diff(&self, mission: &Mission) -> Result<String> {
+    pub async fn diff(&self, mission: &Mission) -> Result<String> {
         let working_dir = self.working_dir(mission);
         GitRunner::new(&working_dir)
             .diff_stat(&mission.base_branch)

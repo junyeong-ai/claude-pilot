@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use super::history::FixStrategy;
-use super::issue::{Issue, IssueCategory, IssueSeverity};
+use super::issue::{Issue, IssueCategory};
+use crate::domain::Severity;
 use crate::config::PatternBankConfig;
 use crate::error::Result;
 use crate::state::{DomainEvent, EventPayload, EventStore};
@@ -20,7 +21,7 @@ use crate::state::{DomainEvent, EventPayload, EventStore};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ErrorSignature {
     pub category: IssueCategory,
-    pub severity: IssueSeverity,
+    pub severity: Severity,
     pub keywords: Vec<String>,
     pub file_patterns: Vec<String>,
     pub confidence: f32,
@@ -484,7 +485,7 @@ impl PatternBank {
                     };
                     let signature = ErrorSignature {
                         category: category.clone(),
-                        severity: IssueSeverity::Error,
+                        severity: Severity::Error,
                         keywords: vec![],
                         file_patterns: vec![],
                         confidence: initial_confidence,
@@ -932,7 +933,7 @@ mod tests {
         // Test with Rust-like error message
         let issue = Issue::new(
             IssueCategory::BuildError,
-            IssueSeverity::Error,
+            Severity::Error,
             "error[E0308]: mismatched types - expected i32, found String",
             TEST_CONFIDENCE,
         )
@@ -951,7 +952,7 @@ mod tests {
         // Test with TypeScript-like error message
         let ts_issue = Issue::new(
             IssueCategory::TypeCheckError,
-            IssueSeverity::Error,
+            Severity::Error,
             "error TS2322: Type string is not assignable to type number",
             TEST_CONFIDENCE,
         )
@@ -971,7 +972,7 @@ mod tests {
     fn test_jaccard_similarity() {
         let sig1 = ErrorSignature {
             category: IssueCategory::BuildError,
-            severity: IssueSeverity::Error,
+            severity: Severity::Error,
             keywords: vec!["error".into(), "type".into(), "mismatch".into()],
             file_patterns: vec!["*.rs".into()],
             confidence: 0.8,
@@ -979,7 +980,7 @@ mod tests {
 
         let sig2 = ErrorSignature {
             category: IssueCategory::BuildError,
-            severity: IssueSeverity::Error,
+            severity: Severity::Error,
             keywords: vec!["error".into(), "type".into(), "expected".into()],
             file_patterns: vec!["*.rs".into()],
             confidence: 0.8,
@@ -987,7 +988,7 @@ mod tests {
 
         let sig3 = ErrorSignature {
             category: IssueCategory::TestFailure,
-            severity: IssueSeverity::Error,
+            severity: Severity::Error,
             keywords: vec!["error".into(), "type".into()],
             file_patterns: vec![],
             confidence: 0.8,
@@ -1007,7 +1008,7 @@ mod tests {
     fn test_pattern_creation_and_update() {
         let sig = ErrorSignature {
             category: IssueCategory::BuildError,
-            severity: IssueSeverity::Error,
+            severity: Severity::Error,
             keywords: vec!["error".into()],
             file_patterns: vec![],
             confidence: 0.8,
@@ -1030,7 +1031,7 @@ mod tests {
     fn test_trajectory_recording() {
         let issue = Issue::new(
             IssueCategory::BuildError,
-            IssueSeverity::Error,
+            Severity::Error,
             "test error",
             TEST_CONFIDENCE,
         );
@@ -1057,7 +1058,7 @@ mod tests {
 
         let sig = ErrorSignature {
             category: IssueCategory::BuildError,
-            severity: IssueSeverity::Error,
+            severity: Severity::Error,
             keywords: vec!["error".into(), "type".into()],
             file_patterns: vec![],
             confidence: 0.8,
@@ -1095,7 +1096,7 @@ mod tests {
 
         let issue = Issue::new(
             IssueCategory::BuildError,
-            IssueSeverity::Error,
+            Severity::Error,
             "test",
             TEST_CONFIDENCE,
         );

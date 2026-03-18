@@ -13,12 +13,12 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 use super::checkpoint::{
-    Checkpoint, CheckpointManager, CheckpointReason, CheckpointRef, RecoveryContext,
+    SessionCheckpoint, SessionCheckpointManager, CheckpointReason, CheckpointRef, RecoveryContext,
 };
 use super::notification::{Notification, NotificationFilter, NotificationLog, NotificationType};
 use super::participant::{AgentCapabilities, Participant, ParticipantRegistry, ParticipantSummary};
 use super::task_graph::{
-    DependencyType, TaskDAG, TaskDependency, TaskInfo, TaskResult, TaskStats, TaskStatus,
+    DagTaskResult, DependencyType, NodeStatus, TaskDAG, TaskDependency, TaskInfo, TaskStats,
 };
 use crate::agent::multi::AgentId;
 
@@ -55,7 +55,8 @@ impl SessionStatus {
 
 /// Phase of the orchestration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Phase {
+#[serde(rename_all = "snake_case")]
+pub enum SessionPhase {
     /// Initial setup and participant registration.
     Setup,
     /// Planning phase - agents discuss and reach consensus.
@@ -70,7 +71,7 @@ pub enum Phase {
     Custom(String),
 }
 
-impl Phase {
+impl SessionPhase {
     pub fn as_str(&self) -> &str {
         match self {
             Self::Setup => "setup",
@@ -94,7 +95,7 @@ impl Phase {
     }
 }
 
-impl std::fmt::Display for Phase {
+impl std::fmt::Display for SessionPhase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_str())
     }
@@ -102,7 +103,7 @@ impl std::fmt::Display for Phase {
 
 /// Configuration for an orchestration session.
 #[derive(Debug, Clone)]
-pub struct SessionConfig {
+pub struct OrchestrationConfig {
     /// Maximum session duration.
     pub max_duration: Duration,
     /// Auto-checkpoint interval.
@@ -121,7 +122,7 @@ pub struct SessionConfig {
     pub notification_max_age: Duration,
 }
 
-impl Default for SessionConfig {
+impl Default for OrchestrationConfig {
     fn default() -> Self {
         Self {
             max_duration: Duration::from_secs(86400),      // 24 hours
@@ -145,9 +146,9 @@ pub struct OrchestrationSession {
     /// Current status.
     status: SessionStatus,
     /// Current phase.
-    phase: Phase,
+    phase: SessionPhase,
     /// Configuration.
-    config: SessionConfig,
+    config: OrchestrationConfig,
     /// Participant registry.
     participants: ParticipantRegistry,
     /// Task DAG.
@@ -155,7 +156,7 @@ pub struct OrchestrationSession {
     /// Notification log.
     notifications: NotificationLog,
     /// Checkpoint manager.
-    checkpoints: CheckpointManager,
+    checkpoints: SessionCheckpointManager,
     /// Context budget tracking.
     context_budget: ContextBudget,
     /// Session start time.
@@ -218,12 +219,12 @@ impl OrchestrationSession {
             id: id.clone(),
             mission: mission.to_string(),
             status: SessionStatus::Initializing,
-            phase: Phase::Setup,
-            config: SessionConfig::default(),
+            phase: SessionPhase::Setup,
+            config: OrchestrationConfig::default(),
             participants: ParticipantRegistry::new(),
             tasks: TaskDAG::new(),
             notifications: NotificationLog::default(),
-            checkpoints: CheckpointManager::new(&id),
+            checkpoints: SessionCheckpointManager::new(&id),
             context_budget: ContextBudget::default(),
             started_at: Instant::now(),
             working_dir,
@@ -232,7 +233,7 @@ impl OrchestrationSession {
     }
 
     /// Create with custom configuration.
-    pub fn with_config(mut self, config: SessionConfig) -> Self {
+    pub fn with_config(mut self, config: OrchestrationConfig) -> Self {
         self.config = config.clone();
         self.notifications =
             NotificationLog::new(config.max_notifications, config.notification_max_age);
@@ -267,7 +268,7 @@ impl OrchestrationSession {
     }
 
     /// Get current phase.
-    pub fn phase(&self) -> &Phase {
+    pub fn phase(&self) -> &SessionPhase {
         &self.phase
     }
 
@@ -280,7 +281,7 @@ impl OrchestrationSession {
     }
 
     /// Transition to the next phase.
-    pub fn advance_phase(&mut self) -> Option<&Phase> {
+    pub fn advance_phase(&mut self) -> Option<&SessionPhase> {
         if let Some(next) = self.phase.next() {
             let from = self.phase.as_str().to_string();
             let to = next.as_str().to_string();
@@ -297,7 +298,7 @@ impl OrchestrationSession {
     }
 
     /// Set phase explicitly.
-    pub fn set_phase(&mut self, phase: Phase) {
+    pub fn set_phase(&mut self, phase: SessionPhase) {
         let from = self.phase.as_str().to_string();
         let to = phase.as_str().to_string();
 
@@ -311,7 +312,7 @@ impl OrchestrationSession {
     /// Mark session as completed.
     pub fn complete(&mut self) {
         self.status = SessionStatus::Completed;
-        self.set_phase(Phase::Finalization);
+        self.set_phase(SessionPhase::Finalization);
     }
 
     /// Mark session as failed.
@@ -367,12 +368,12 @@ impl OrchestrationSession {
 
     /// Get participant by ID.
     pub fn participant(&self, id: &AgentId) -> Option<&Participant> {
-        self.participants.get(id)
+        self.participants.participant(id)
     }
 
     /// Get mutable participant.
     pub fn participant_mut(&mut self, id: &AgentId) -> Option<&mut Participant> {
-        self.participants.get_mut(id)
+        self.participants.participant_mut(id)
     }
 
     /// Get all participants.
@@ -428,7 +429,7 @@ impl OrchestrationSession {
         self.tasks.start_task(task_id, agent_id.clone())?;
 
         // Update participant
-        if let Some(p) = self.participants.get_mut(agent_id) {
+        if let Some(p) = self.participants.participant_mut(agent_id) {
             p.assign_task(task_id.to_string());
         }
 
@@ -450,15 +451,15 @@ impl OrchestrationSession {
         &mut self,
         task_id: &str,
         agent_id: &AgentId,
-        result: TaskResult,
+        result: DagTaskResult,
     ) -> Result<(), String> {
-        let files_modified = result.modified_files.clone();
+        let files_modified = result.files_modified.clone();
 
         // Update task
         self.tasks.complete_task(task_id, result)?;
 
         // Update participant
-        if let Some(p) = self.participants.get_mut(agent_id) {
+        if let Some(p) = self.participants.participant_mut(agent_id) {
             p.complete_task(task_id);
         }
 
@@ -487,7 +488,7 @@ impl OrchestrationSession {
         self.tasks.fail_task(task_id, error.to_string())?;
 
         // Update participant
-        if let Some(p) = self.participants.get_mut(agent_id) {
+        if let Some(p) = self.participants.participant_mut(agent_id) {
             p.complete_task(task_id);
         }
 
@@ -576,7 +577,7 @@ impl OrchestrationSession {
     /// Format notifications for context injection.
     pub fn format_notifications_for_context(&self, agent_id: &AgentId, limit: usize) -> String {
         let notifications = self.notifications_for_agent(agent_id, limit);
-        self.notifications.format_for_context(&notifications)
+        self.notifications.format_for_llm(&notifications)
     }
 
     /// Acknowledge notification.
@@ -598,11 +599,11 @@ impl OrchestrationSession {
     // === Checkpoint Management ===
 
     /// Create a manual checkpoint.
-    pub fn create_checkpoint(&mut self, reason: CheckpointReason) -> &Checkpoint {
+    pub fn create_checkpoint(&mut self, reason: CheckpointReason) -> &SessionCheckpoint {
         let refs = self.create_checkpoint_refs();
         let (completed, failed, in_progress) = self.task_id_lists();
 
-        let cp = Checkpoint::new(&self.id, reason)
+        let cp = SessionCheckpoint::new(&self.id, reason)
             .with_refs(refs)
             .with_phase(self.phase.as_str())
             .with_tasks(completed, failed, in_progress)
@@ -623,7 +624,7 @@ impl OrchestrationSession {
     }
 
     /// Maybe create scheduled checkpoint.
-    pub fn maybe_checkpoint(&mut self) -> Option<&Checkpoint> {
+    pub fn maybe_checkpoint(&mut self) -> Option<&SessionCheckpoint> {
         let refs = self.create_checkpoint_refs();
         let (completed, failed, in_progress) = self.task_id_lists();
 
@@ -673,9 +674,9 @@ impl OrchestrationSession {
         for id in self.tasks.task_ids() {
             if let Some(node) = self.tasks.get(id) {
                 match node.status {
-                    TaskStatus::Completed => completed.push(id.to_string()),
-                    TaskStatus::Failed => failed.push(id.to_string()),
-                    TaskStatus::InProgress => in_progress.push(id.to_string()),
+                    NodeStatus::Completed => completed.push(id.to_string()),
+                    NodeStatus::Failed => failed.push(id.to_string()),
+                    NodeStatus::InProgress => in_progress.push(id.to_string()),
                     _ => {}
                 }
             }
@@ -725,7 +726,7 @@ impl OrchestrationSession {
     }
 
     /// Get configuration.
-    pub fn config(&self) -> &SessionConfig {
+    pub fn config(&self) -> &OrchestrationConfig {
         &self.config
     }
 
@@ -758,7 +759,7 @@ pub struct SessionSummary {
     pub id: String,
     pub mission: String,
     pub status: SessionStatus,
-    pub phase: Phase,
+    pub phase: SessionPhase,
     pub duration_secs: u64,
     pub participant_count: usize,
     pub task_stats: TaskStats,
@@ -778,11 +779,6 @@ fn generate_session_id() -> String {
 /// Thread-safe session wrapper.
 pub type SharedSession = Arc<RwLock<OrchestrationSession>>;
 
-/// Create a shared session.
-pub fn create_shared_session(mission: &str, working_dir: PathBuf) -> SharedSession {
-    Arc::new(RwLock::new(OrchestrationSession::new(mission, working_dir)))
-}
-
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
@@ -799,16 +795,16 @@ mod tests {
         let mut session = create_test_session();
 
         assert_eq!(session.status(), SessionStatus::Initializing);
-        assert_eq!(session.phase(), &Phase::Setup);
+        assert_eq!(session.phase(), &SessionPhase::Setup);
 
         session.start();
         assert_eq!(session.status(), SessionStatus::Active);
 
         session.advance_phase(); // Setup -> Planning
-        assert_eq!(session.phase(), &Phase::Planning);
+        assert_eq!(session.phase(), &SessionPhase::Planning);
 
         session.advance_phase(); // Planning -> Implementation
-        assert_eq!(session.phase(), &Phase::Implementation);
+        assert_eq!(session.phase(), &SessionPhase::Implementation);
 
         session.complete();
         assert_eq!(session.status(), SessionStatus::Completed);
@@ -862,10 +858,10 @@ mod tests {
             .complete_task(
                 "task-1",
                 &agent_id,
-                TaskResult {
+                DagTaskResult {
                     success: true,
                     output: "Done".to_string(),
-                    modified_files: vec!["auth.rs".to_string()],
+                    files_modified: vec!["auth.rs".to_string()],
                     artifacts: Vec::new(),
                 },
             )

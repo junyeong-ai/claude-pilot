@@ -54,7 +54,7 @@ pub enum Commands {
         #[arg(long)]
         direct: bool,
 
-        /// Mission priority (P1, P2, P3)
+        /// Mission priority (P1, P2, P3, P4)
         #[arg(long, value_enum)]
         priority: Option<PriorityArg>,
 
@@ -174,14 +174,16 @@ pub enum PriorityArg {
     P1,
     P2,
     P3,
+    P4,
 }
 
-impl From<PriorityArg> for crate::mission::Priority {
+impl From<PriorityArg> for crate::mission::MissionPriority {
     fn from(arg: PriorityArg) -> Self {
         match arg {
             PriorityArg::P1 => Self::P1,
             PriorityArg::P2 => Self::P2,
             PriorityArg::P3 => Self::P3,
+            PriorityArg::P4 => Self::P4,
         }
     }
 }
